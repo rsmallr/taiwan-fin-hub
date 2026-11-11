@@ -2,6 +2,7 @@ export const queryKeys = {
   runtime: ["runtime"] as const,
   summary: ["summary"] as const,
   bank: ["bank"] as const,
+  bankAccounts: ["bank", "accounts"] as const,
   bankRange: (from: string, to: string) => ["bank", "range", from, to] as const,
   bills: ["creditCardBills"] as const,
   billsRange: (from: string, to: string) =>
@@ -16,8 +17,11 @@ export const queryKeys = {
   invoiceDetail: (invoiceId: string) =>
     ["invoices", "detail", invoiceId] as const,
   invoiceTransactionMappings: ["invoice-transaction-mappings"] as const,
+  invoiceTransactionMappingsRange: (from: string, to: string) =>
+    ["invoice-transaction-mappings", "range", from, to] as const,
   manualAssets: ["manualAssets"] as const,
   exchangeRates: ["exchange-rates"] as const,
+  exchangeRateCurrencies: ["exchange-rates", "currencies"] as const,
   netWorthHistory: ["netWorthHistory"] as const,
   syncJobs: ["sync-jobs"] as const,
   latestSyncReport: ["sync-reports", "latest"] as const,
@@ -27,6 +31,7 @@ export const queryKeys = {
   notifications: ["notifications"] as const,
   classificationCategories: ["classification-categories"] as const,
   classificationRules: ["classification-rules"] as const,
+  aiClassification: ["ai-classification"] as const,
   connectorSettings: (id: string) => ["connector-settings", id] as const,
   manualAssetHistory: (id: string) => ["manualAssetHistory", id] as const,
 };

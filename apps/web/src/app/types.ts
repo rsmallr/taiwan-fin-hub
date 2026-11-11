@@ -1,14 +1,13 @@
 export type PrimaryView = "overview" | "assets" | "activity" | "settings";
 
-export type DetailView = "investments" | "manual-assets";
-
 export type MobileSettingsView =
   | "data-sources"
   | "sync-notifications"
   | "exchange-rates"
-  | "classification-rules";
+  | "classification-rules"
+  | "about";
 
-export type View = PrimaryView | DetailView | MobileSettingsView | "more";
+export type View = PrimaryView | MobileSettingsView | "more";
 
 export interface RuntimeInfo {
   demoMode: boolean;

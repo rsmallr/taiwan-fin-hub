@@ -1,9 +1,14 @@
 import type {
   NotificationConfig,
   NotificationPreferences,
+  PaymentReminder,
+  PaymentReminderSummary,
   PushSubscriptionInput,
-} from "@taiwan-fin-hub/core";
-import { sanitizeDatabaseError } from "@taiwan-fin-hub/db";
+} from "@taiwan-fin-hub/shared";
+import { collectPaymentReminders, taipeiDateKey } from "@taiwan-fin-hub/shared";
+import { sanitizeDatabaseError } from "../../db";
+import { getBankAccounts, getCreditCardBillsRange } from "../bank/service";
+import { getExchangeRates } from "../exchange-rates/service";
 import { configEncryptionKey } from "../../platform/config";
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
@@ -11,6 +16,7 @@ import { isDemoMode } from "../../platform/http";
 import {
   countPushSubscriptions,
   getNotificationPreferences,
+  listMaturingTimeDeposits,
   listPushSubscriptions,
   markPushFailure,
   markPushSuccess,
@@ -20,7 +26,11 @@ import {
   upsertPushSubscription,
 } from "./repository";
 import {
-  scheduledSyncSummaryPayload,
+  collectMaturityReminders,
+  type MaturityReminder,
+} from "./deposit-maturity";
+import {
+  scheduledSummaryNotification,
   shouldNotify,
   summaryStatus,
   syncNotificationPayload,
@@ -77,6 +87,7 @@ export async function getNotificationConfig(
         success: false,
         failed: true,
         needsUserAction: true,
+        paymentDue: true,
       },
     };
   }
@@ -115,8 +126,16 @@ export async function unregisterPushSubscription(env: Env, id: string) {
 
 export async function updateNotificationPreferences(
   env: Env,
-  preferences: NotificationPreferences,
+  input: Omit<NotificationPreferences, "paymentDue"> & {
+    paymentDue?: boolean;
+  },
 ) {
+  // 尚未更新的已安裝 App 不會送出 paymentDue；保留目前設定。
+  const preferences: NotificationPreferences = {
+    ...input,
+    paymentDue:
+      input.paymentDue ?? (await getNotificationPreferences(env.DB)).paymentDue,
+  };
   await saveNotificationPreferences(
     env.DB,
     preferences,
@@ -165,16 +184,27 @@ export async function safelySendScheduledSyncSummary(
   env: Env,
   events: SyncNotificationEvent[],
 ) {
-  if (events.length === 0) return;
   const status = summaryStatus(events);
   try {
     const preferences = await getNotificationPreferences(env.DB);
-    if (!shouldNotify(preferences, status)) return;
+    const [reminders, maturities] = preferences.paymentDue
+      ? await Promise.all([
+          safelyLoadPaymentReminders(env.DB),
+          safelyLoadMaturityReminders(env.DB),
+        ])
+      : [[], []];
+    const payload = scheduledSummaryNotification(
+      preferences,
+      events,
+      reminders,
+      maturities,
+    );
+    if (!payload) return;
     if (!isPushConfigured(env)) {
       console.warn("[notifications] skipped: VAPID keys are not configured");
       return;
     }
-    await deliverPushPayload(env, scheduledSyncSummaryPayload(events));
+    await deliverPushPayload(env, payload);
   } catch (error) {
     const safeError = sanitizeDatabaseError(error);
     console.error(
@@ -186,6 +216,83 @@ export async function safelySendScheduledSyncSummary(
           safeError instanceof Error ? safeError.message : String(safeError),
       }),
     );
+  }
+}
+
+/**
+ * 讀取繳款提醒，含扣款帳戶餘額足夠而隱藏的款項（`covered`）。匯率只用於外幣
+ * 款項由台幣帳戶扣繳時的換算，讀取失敗時以空匯率表繼續，該類款項維持原提醒；
+ * 帳戶或帳單讀取失敗時拋出錯誤。
+ */
+export async function loadPaymentReminders(
+  db: D1Database,
+  now = new Date(),
+): Promise<PaymentReminderSummary> {
+  // 本月到期的帳單通常屬於上一或上上期別，與總覽查詢的範圍相同。
+  const [year, month] = taipeiDateKey(now).split("-").map(Number);
+  const monthStart = (offset: number) => {
+    const date = new Date(Date.UTC(year!, month! - 1 + offset, 1));
+    return date.toISOString().slice(0, 10);
+  };
+  const [accounts, bills, rates] = await Promise.all([
+    getBankAccounts(db),
+    getCreditCardBillsRange(db, { from: monthStart(-2), to: monthStart(1) }),
+    getExchangeRates(db).catch((error: unknown) => {
+      const safeError = sanitizeDatabaseError(error);
+      console.error(
+        JSON.stringify({
+          event: "payment_reminder_rates_load_failed",
+          message:
+            safeError instanceof Error ? safeError.message : String(safeError),
+        }),
+      );
+      return [];
+    }),
+  ]);
+  const ratesToTwd = Object.fromEntries(
+    rates.map((rate) => [rate.currency, rate.rateTwd]),
+  );
+  return collectPaymentReminders(accounts, bills, now, ratesToTwd);
+}
+
+/** 繳款提醒只是同步摘要的附加資訊；讀取失敗時記錄 log 並照常送出摘要。 */
+export async function safelyLoadPaymentReminders(
+  db: D1Database,
+  now = new Date(),
+): Promise<PaymentReminder[]> {
+  try {
+    return (await loadPaymentReminders(db, now)).reminders;
+  } catch (error) {
+    const safeError = sanitizeDatabaseError(error);
+    console.error(
+      JSON.stringify({
+        event: "payment_reminder_load_failed",
+        message:
+          safeError instanceof Error ? safeError.message : String(safeError),
+      }),
+    );
+    return [];
+  }
+}
+
+/** 定存到期提醒同樣是附加資訊；讀取失敗只記錄 log，照常送出同步摘要。 */
+export async function safelyLoadMaturityReminders(
+  db: D1Database,
+  now = new Date(),
+): Promise<MaturityReminder[]> {
+  try {
+    const rows = await listMaturingTimeDeposits(db, taipeiDateKey(now));
+    return collectMaturityReminders(rows, now);
+  } catch (error) {
+    const safeError = sanitizeDatabaseError(error);
+    console.error(
+      JSON.stringify({
+        event: "maturity_reminder_load_failed",
+        message:
+          safeError instanceof Error ? safeError.message : String(safeError),
+      }),
+    );
+    return [];
   }
 }
 

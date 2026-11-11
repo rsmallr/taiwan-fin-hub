@@ -1,10 +1,17 @@
 import type { Hono } from "hono";
+import type {
+  BankAccountResponse,
+  BankDataResponse,
+  CreditCardBillResponse,
+  PaymentAccountInput,
+} from "@taiwan-fin-hub/shared";
 import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import type { AppBindings } from "../../platform/env";
 import { honoFactory } from "../../platform/hono";
 import {
   encodePageCursor,
+  jsonError,
   parseKeysetPagination,
   setKeysetPaginationHeaders,
 } from "../../platform/http";
@@ -14,11 +21,18 @@ import {
 } from "../../platform/month-range";
 import { validationHook } from "../../platform/validation";
 import {
+  clearPaymentAccount,
+  getBankAccounts,
   getBankPage,
   getBankRange,
   getCreditCardBillPage,
   getCreditCardBillsRange,
+  setPaymentAccount,
 } from "./service";
+import {
+  BankAccountNotFoundError,
+  InvalidPaymentAccountError,
+} from "./payment-accounts";
 
 const transactionPageCursorSchema = z.object({
   effectiveDate: z.string(),
@@ -32,10 +46,62 @@ const creditCardBillPageCursorSchema = z.object({
   id: z.string(),
 });
 
+const paymentAccountSchema = z.object({
+  paymentAccountId: z.string().min(1).max(256).nullable(),
+});
+
+function paymentAccountError(error: unknown) {
+  if (error instanceof BankAccountNotFoundError)
+    return jsonError("BANK_ACCOUNT_NOT_FOUND", "找不到信用卡或貸款帳戶。", 404);
+  if (error instanceof InvalidPaymentAccountError)
+    return jsonError(
+      "INVALID_PAYMENT_ACCOUNT",
+      "扣款帳戶須為同幣別或台幣的存款帳戶。",
+      400,
+    );
+  throw error;
+}
+
 export const bankRoutes = honoFactory.createApp();
 registerBankRoutes(bankRoutes);
 
 function registerBankRoutes(api: Hono<AppBindings>) {
+  // Pages that only show balances skip transaction classification.
+  api.get("/bank/accounts", async (c) =>
+    c.json((await getBankAccounts(c.env.DB)) satisfies BankAccountResponse[]),
+  );
+
+  api.put(
+    "/bank/accounts/:id/payment-account",
+    zValidator(
+      "json",
+      paymentAccountSchema,
+      validationHook("INVALID_REQUEST", "Payment account is invalid."),
+    ),
+    async (c) => {
+      try {
+        const input = c.req.valid("json") satisfies PaymentAccountInput;
+        await setPaymentAccount(
+          c.env.DB,
+          c.req.param("id"),
+          input.paymentAccountId,
+        );
+        return c.json({ success: true });
+      } catch (error) {
+        return paymentAccountError(error);
+      }
+    },
+  );
+
+  api.delete("/bank/accounts/:id/payment-account", async (c) => {
+    try {
+      await clearPaymentAccount(c.env.DB, c.req.param("id"));
+      return c.json({ success: true });
+    } catch (error) {
+      return paymentAccountError(error);
+    }
+  });
+
   api.get(
     "/bank",
     zValidator(
@@ -45,7 +111,10 @@ function registerBankRoutes(api: Hono<AppBindings>) {
     ),
     async (c) => {
       const range = resolveMonthDateRange(c.req.valid("query"));
-      if (range) return c.json(await getBankRange(c.env.DB, range));
+      if (range)
+        return c.json(
+          (await getBankRange(c.env.DB, range)) satisfies BankDataResponse,
+        );
 
       const { limit, cursor } = parseKeysetPagination(
         c.req.query(),
@@ -67,7 +136,7 @@ function registerBankRoutes(api: Hono<AppBindings>) {
       return c.json({
         accounts: page.accounts,
         transactions: page.transactions,
-      });
+      } satisfies BankDataResponse);
     },
   );
 
@@ -80,7 +149,13 @@ function registerBankRoutes(api: Hono<AppBindings>) {
     ),
     async (c) => {
       const range = resolveMonthDateRange(c.req.valid("query"));
-      if (range) return c.json(await getCreditCardBillsRange(c.env.DB, range));
+      if (range)
+        return c.json(
+          (await getCreditCardBillsRange(
+            c.env.DB,
+            range,
+          )) satisfies CreditCardBillResponse[],
+        );
 
       const { limit, cursor } = parseKeysetPagination(
         c.req.query(),
@@ -99,7 +174,7 @@ function registerBankRoutes(api: Hono<AppBindings>) {
               })
             : undefined,
       });
-      return c.json(page.bills);
+      return c.json(page.bills satisfies CreditCardBillResponse[]);
     },
   );
 }

@@ -1,7 +1,7 @@
 import type {
   ScheduledSyncReport,
   SyncFinancialChangeUnavailableReason,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 
 export type SyncReportStatusPresentation = {
   label: string;
@@ -48,11 +48,6 @@ export function financialChangeUnavailableMessage(
     return "部分資料來源未更新，變化包含沿用的上次資料。";
   if (reason === "snapshot_unavailable") return "這次沒有完整的資產比較資料。";
   return null;
-}
-
-export function zeroRateCurrenciesMessage(missingCurrencies: string[]) {
-  if (missingCurrencies.length === 0) return null;
-  return `缺少 ${missingCurrencies.join("、")} 匯率，相關資產以 NT$0 計算。`;
 }
 
 export function signedFinancialChange(

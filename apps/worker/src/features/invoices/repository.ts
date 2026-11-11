@@ -1,5 +1,5 @@
-import type { ConnectorId } from "@taiwan-fin-hub/core";
-import { createDrizzle, invoiceLineItems, invoices } from "@taiwan-fin-hub/db";
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
+import { createDrizzle, invoiceLineItems, invoices } from "../../db";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { MonthDateRange } from "../../platform/month-range";
 
@@ -7,6 +7,20 @@ import type { MonthDateRange } from "../../platform/month-range";
 const invoiceDay = sql`CASE WHEN length(${invoices.invoiceDate}) > 10
   THEN COALESCE(date(${invoices.invoiceDate}, '+8 hours'), substr(${invoices.invoiceDate}, 1, 10))
   ELSE ${invoices.invoiceDate} END`;
+
+/**
+ * Taipei-day range on invoices. The raw invoice_date bounds widen by one day
+ * on each side (covering any UTC offset) so idx_invoices_page can narrow the
+ * scan before the exact day expression is evaluated.
+ */
+export function invoiceDayInRange(range: MonthDateRange) {
+  return and(
+    sql`${invoices.invoiceDate} >= date(${range.from}, '-1 day')`,
+    sql`${invoices.invoiceDate} < date(${range.to}, '+1 day')`,
+    sql`(${invoiceDay}) >= ${range.from}`,
+    sql`(${invoiceDay}) < ${range.to}`,
+  );
+}
 
 const invoiceSummaryColumns = {
   id: invoices.id,
@@ -16,6 +30,8 @@ const invoiceSummaryColumns = {
   invoiceDate: invoices.invoiceDate,
   sellerName: invoices.sellerName,
   amount: invoices.amount,
+  excludedFromCalculation:
+    sql<boolean>`${invoices.excludedFromCalculation} = 1`.mapWith(Boolean),
 };
 
 export type InvoicePageCursor = {
@@ -32,6 +48,7 @@ export type InvoiceRow = {
   invoiceDate: string;
   sellerName: string | null;
   amount: number;
+  excludedFromCalculation: boolean;
   updatedAt: string;
 };
 
@@ -85,15 +102,25 @@ export async function listInvoicesInRange(
     .where(
       days
         ? sql`(${invoiceDay}) IN (SELECT value FROM json_each(${JSON.stringify(days)}))`
-        : and(
-            sql`(${invoiceDay}) >= ${range.from}`,
-            sql`(${invoiceDay}) < ${range.to}`,
-          ),
+        : invoiceDayInRange(range),
     )
     .orderBy(
       desc(invoices.invoiceDate),
       desc(invoices.updatedAt),
       desc(invoices.id),
+    )
+    .all();
+}
+
+export async function listInvoicesByIds(db: D1Database, ids: string[]) {
+  return createDrizzle(db)
+    .select({
+      ...invoiceSummaryColumns,
+      updatedAt: invoices.updatedAt,
+    })
+    .from(invoices)
+    .where(
+      sql`${invoices.id} IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`,
     )
     .all();
 }
@@ -132,4 +159,21 @@ export async function findInvoice(db: D1Database, invoiceId: string) {
       .limit(1)
       .get()) ?? null
   );
+}
+
+/**
+ * Leaves updated_at alone: it is the page cursor and the AI scan watermark,
+ * and tracks source data rather than this user preference.
+ */
+export async function updateInvoiceCalculationExclusion(
+  db: D1Database,
+  invoiceId: string,
+  excludedFromCalculation: boolean,
+) {
+  const result = await createDrizzle(db)
+    .update(invoices)
+    .set({ excludedFromCalculation: excludedFromCalculation ? 1 : 0 })
+    .where(eq(invoices.id, invoiceId))
+    .run();
+  return result.meta.changes === 1;
 }

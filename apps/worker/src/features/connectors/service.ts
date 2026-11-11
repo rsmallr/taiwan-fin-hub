@@ -1,6 +1,10 @@
-import { parseConnectorConfig } from "@taiwan-fin-hub/connectors";
-import { connectorCatalog, type ConnectorId } from "@taiwan-fin-hub/core";
-import { clearConnectorCursor } from "@taiwan-fin-hub/db";
+import {
+  connectorIdentityResets,
+  describeConnectorSession,
+  parseConnectorConfig,
+} from "../../sources/config-registry";
+import { connectorCatalog, type ConnectorId } from "@taiwan-fin-hub/shared";
+import { clearConnectorCursor } from "../../db";
 import { configEncryptionKey } from "../../platform/config";
 import { decryptJson, encryptJson } from "../../platform/crypto";
 import type { Env } from "../../platform/env";
@@ -9,90 +13,29 @@ import { findConnectorSettings, saveConnectorSettings } from "./repository";
 export class ConnectorConfigMissingError extends Error {}
 export class InvalidConnectorConfigError extends Error {}
 
-function hasValidCathayTrustedDevice(value: unknown) {
-  if (typeof value !== "string") return false;
-  try {
-    const cookies = JSON.parse(value) as unknown;
-    return (
-      Array.isArray(cookies) &&
-      cookies.some((cookie) => {
-        if (!cookie || typeof cookie !== "object") return false;
-        const candidate = cookie as Record<string, unknown>;
-        const domain = String(candidate.domain ?? "")
-          .replace(/^\./, "")
-          .toLowerCase();
-        return (
-          candidate.name === "CUB.eBank.DeviceId" &&
-          typeof candidate.value === "string" &&
-          candidate.value.length > 0 &&
-          typeof candidate.expires === "number" &&
-          candidate.expires > Date.now() / 1000 &&
-          (domain === "cathaybk.com.tw" || domain.endsWith(".cathaybk.com.tw"))
-        );
-      })
-    );
-  } catch {
-    return false;
-  }
-}
-
 export async function getConnectorSettingsView(
   env: Env,
   connectorId: ConnectorId,
 ) {
   const settings = await findConnectorSettings(env.DB, connectorId);
-  let sessionAvailable = false;
   let credentialsComplete = false;
-  let verificationPending = false;
-  let verificationChannel: "email" | "sms" | null = null;
-  let verificationExpiresAt: string | null = null;
+  let sessionState = describeConnectorSession(connectorId, {}, false);
   if (settings) {
     const stored = await decryptJson<Record<string, unknown>>(
       settings.encrypted_config,
       configEncryptionKey(env),
     );
-    credentialsComplete = connectorCatalog[connectorId].credentialFields.every(
-      (key) => typeof stored[key] === "string" && stored[key].length > 0,
+    credentialsComplete = connectorCatalog[connectorId].credentialFields
+      // select 欄位有預設值（第一個選項），未設定不算憑證不完整。
+      .filter(({ type }) => type !== "select")
+      .every(
+        ({ key }) => typeof stored[key] === "string" && stored[key].length > 0,
+      );
+    sessionState = describeConnectorSession(
+      connectorId,
+      stored,
+      credentialsComplete,
     );
-    if (connectorId === "tdcc") {
-      const session = stored.session;
-      sessionAvailable =
-        credentialsComplete &&
-        Boolean(
-          session &&
-          typeof session === "object" &&
-          typeof (session as Record<string, unknown>).tokenId === "string",
-        );
-    } else if (
-      connectorId === "esun" ||
-      connectorId === "sinopac" ||
-      connectorId === "taishin" ||
-      connectorId === "firstbank" ||
-      connectorId === "hncb"
-    ) {
-      sessionAvailable =
-        typeof stored.sessionCookies === "string" &&
-        stored.sessionCookies.length > 0 &&
-        (connectorId !== "sinopac" ||
-          stored.protocol === "sinopac-mobile-app-json-v1");
-    } else if (connectorId === "cathaybk") {
-      sessionAvailable = hasValidCathayTrustedDevice(stored.sessionCookies);
-      verificationExpiresAt =
-        typeof stored.browserSessionExpiresAt === "string"
-          ? stored.browserSessionExpiresAt
-          : null;
-      verificationPending =
-        credentialsComplete &&
-        typeof stored.browserSessionId === "string" &&
-        stored.browserSessionId.length > 0 &&
-        verificationExpiresAt !== null &&
-        new Date(verificationExpiresAt) > new Date();
-      verificationChannel =
-        verificationPending &&
-        (stored.otpChannel === "email" || stored.otpChannel === "sms")
-          ? stored.otpChannel
-          : null;
-    }
   }
   return {
     connectorId,
@@ -105,10 +48,7 @@ export async function getConnectorSettingsView(
         )
       : null,
     credentialsComplete,
-    sessionAvailable,
-    verificationPending,
-    verificationChannel,
-    verificationExpiresAt,
+    ...sessionState,
   };
 }
 
@@ -119,13 +59,15 @@ export async function updateConnectorSettings(
 ) {
   const definition = connectorCatalog[connectorId];
   const publicKeys: readonly string[] = definition.publicFields;
-  const hasSensitive = definition.credentialFields.some(
+  const credentialKeys = definition.credentialFields.map(({ key }) => key);
+  const hasSensitive = credentialKeys.some(
     (key) => rawConfig[key] !== undefined && rawConfig[key] !== "",
   );
   const now = new Date().toISOString();
   const encryptionKey = configEncryptionKey(env);
   const existing = await findConnectorSettings(env.DB, connectorId);
-  if (!hasSensitive && !existing) throw new ConnectorConfigMissingError();
+  if (!hasSensitive && !existing && credentialKeys.length > 0)
+    throw new ConnectorConfigMissingError();
 
   let encryptedConfig: Record<string, unknown>;
   let mergedPublic: Record<string, unknown>;
@@ -150,10 +92,17 @@ export async function updateConnectorSettings(
     };
     shouldClearCursor =
       Boolean(existing) &&
-      fieldsChanged(definition.credentialFields, storedConfig, rawConfig);
+      fieldsChanged(credentialKeys, storedConfig, rawConfig);
     if (shouldClearCursor) {
       for (const key of definition.resetOnCredentialChangeFields) {
         delete mergedConfig[key];
+      }
+      const identityReset = connectorIdentityResets[connectorId];
+      if (
+        identityReset &&
+        fieldsChanged(identityReset.fields, storedConfig, rawConfig)
+      ) {
+        for (const key of identityReset.reset) delete mergedConfig[key];
       }
     }
 

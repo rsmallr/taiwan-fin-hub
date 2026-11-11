@@ -1,17 +1,18 @@
 import type { MiddlewareHandler } from "hono";
-import { sanitizeDatabaseError } from "@taiwan-fin-hub/db";
+import type { ApiErrorCode, ApiErrorResponse } from "@taiwan-fin-hub/shared";
+import { sanitizeDatabaseError } from "../db";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { AppBindings, Env } from "./env";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-export function jsonError(code: string, message: string, status = 400) {
+export function jsonError(code: ApiErrorCode, message: string, status = 400) {
   return Response.json(
     {
       success: false,
       error: { code, message },
-    },
+    } satisfies ApiErrorResponse,
     { status },
   );
 }
@@ -61,14 +62,14 @@ export const demoReadOnlyMiddleware: MiddlewareHandler<AppBindings> = async (
         code: "DEMO_MODE_READ_ONLY",
         message: "Demo site is read-only.",
       },
-    },
+    } satisfies ApiErrorResponse,
     403,
   );
 };
 
 const paginationLimitSchema = z.coerce.number().int().min(1).max(100);
 
-export function parseKeysetPagination<T extends z.ZodTypeAny>(
+export function parseKeysetPagination<T extends z.ZodType>(
   query: Record<string, string | undefined>,
   cursorSchema: T,
   defaultLimit = 50,

@@ -5,7 +5,7 @@ import {
   exchangeRates,
   manualAssets,
   netWorthHistory,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 
@@ -45,7 +45,7 @@ export async function listNetWorthChartHistory(db: D1Database) {
     .where(
       sql`${history.source} = 'manual'
           OR (${history.source} = 'bank' AND ${history.assetType} = 'deposit')
-          OR ${history.assetType} IN ('stock', 'fund')`,
+          OR ${history.assetType} IN ('stock', 'fund', 'crypto')`,
     )
     .orderBy(
       asc(history.date),
@@ -133,7 +133,7 @@ export async function calculateBankDepositValue(db: D1Database, date: string) {
     .where(
       and(
         isNull(account.canonicalAccountId),
-        sql`COALESCE(${account.accountType}, 'unknown') != 'credit'`,
+        sql`COALESCE(${account.accountType}, 'unknown') NOT IN ('credit', 'loan')`,
       ),
     )
     .all();

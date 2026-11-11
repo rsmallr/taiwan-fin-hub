@@ -2,18 +2,28 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { ChevronRight } from "@lucide/svelte";
   import { exchangeRatesQuery, manualAssetsQuery } from "@/data/assets/queries";
-  import { bankQuery, creditCardBillsQuery } from "@/data/bank/queries";
+  import { bankAccountsQuery, creditCardBillsQuery } from "@/data/bank/queries";
   import {
     investmentsQuery,
     investmentTransactionsQuery,
   } from "@/data/investments/queries";
   import type { ApiClient } from "@/shared/api/client";
-  import { formatCompactTwd, formatCurrency } from "@/shared/format/financial";
+  import {
+    formatCompactTwd,
+    formatCurrency,
+    rateMap,
+  } from "@/shared/format/financial";
   import EmptyState from "@/shared/ui/EmptyState.svelte";
+  import CryptoWorkspace from "./components/CryptoWorkspace.svelte";
+  import InvestmentHoldings from "./components/InvestmentHoldings.svelte";
   import InstitutionDetails from "./components/InstitutionDetails.svelte";
   import InvestmentWorkspace from "./components/InvestmentWorkspace.svelte";
   import ManualAssets from "./ManualAssets.svelte";
   import { calculateAssetSummary } from "./model/summary";
+  import {
+    isCryptoPosition,
+    listedHoldingCount,
+  } from "@/data/investments/holding-groups";
   import type { InstitutionAssetGroup } from "./model/summary";
 
   type LedgerItem =
@@ -24,33 +34,55 @@
         group: InstitutionAssetGroup;
       }
     | { key: "investments"; kind: "investments"; label: "投資" }
+    | { key: "crypto"; kind: "crypto"; label: "加密貨幣" }
     | { key: "manual-assets"; kind: "manual-assets"; label: "其他資產" };
 
   let { api }: { api: ApiClient } = $props();
 
-  const bank = createQuery(bankQuery(() => api));
-  const bills = createQuery(creditCardBillsQuery(() => api));
-  const investments = createQuery(investmentsQuery(() => api));
-  const trades = createQuery(investmentTransactionsQuery(() => api));
-  const manual = createQuery(manualAssetsQuery(() => api));
-  const rates = createQuery(exchangeRatesQuery(() => api));
+  const bank = createQuery(() => bankAccountsQuery(() => api));
+  const bills = createQuery(() => creditCardBillsQuery(() => api));
+  const investments = createQuery(() => investmentsQuery(() => api));
+  const trades = createQuery(() => investmentTransactionsQuery(() => api));
+  const manual = createQuery(() => manualAssetsQuery(() => api));
+  const rates = createQuery(() => exchangeRatesQuery(() => api));
 
   const summary = $derived(
     calculateAssetSummary({
-      bank: $bank.data ?? { accounts: [], transactions: [] },
-      investments: $investments.data ?? [],
-      manualAssets: $manual.data ?? [],
-      rates: $rates.data,
+      bank: { accounts: bank.data ?? [], transactions: [] },
+      investments: investments.data ?? [],
+      manualAssets: manual.data ?? [],
+      rates: rates.data,
     }),
   );
+  const rateLookup = $derived(rateMap(rates.data));
+  // 加密貨幣與集保等證券投資分成兩個大類；交易紀錄只有證券投資有。
+  const securityPositions = $derived(
+    (investments.data ?? []).filter((row) => !isCryptoPosition(row)),
+  );
+  const cryptoPositions = $derived(
+    (investments.data ?? []).filter(isCryptoPosition),
+  );
+  const holdingCount = $derived(
+    listedHoldingCount(securityPositions, rateLookup),
+  );
+  const cryptoHoldingCount = $derived(
+    listedHoldingCount(cryptoPositions, rateLookup),
+  );
+  const exchangeCount = $derived(
+    new Set(cryptoPositions.map((row) => row.connectorId)).size,
+  );
+  // 證券持倉都賣光時仍保留投資入口，交易紀錄分頁才看得到歷史交易。
+  const showInvestments = $derived(
+    securityPositions.length > 0 || (trades.data?.length ?? 0) > 0,
+  );
   const loading = $derived(
-    $bank.isPending ||
-      $investments.isPending ||
-      $manual.isPending ||
-      $rates.isPending,
+    bank.isPending ||
+      investments.isPending ||
+      manual.isPending ||
+      rates.isPending,
   );
   const failed = $derived(
-    $bank.isError || $investments.isError || $manual.isError || $rates.isError,
+    bank.isError || investments.isError || manual.isError || rates.isError,
   );
   const ledgerItems = $derived<LedgerItem[]>([
     ...summary.institutionGroups.map((group): LedgerItem => ({
@@ -59,10 +91,13 @@
       label: group.institution,
       group,
     })),
-    ...(($investments.data?.length ?? 0) > 0
+    ...(showInvestments
       ? ([{ key: "investments", kind: "investments", label: "投資" }] as const)
       : []),
-    ...(($manual.data?.length ?? 0) > 0
+    ...(cryptoPositions.length > 0
+      ? ([{ key: "crypto", kind: "crypto", label: "加密貨幣" }] as const)
+      : []),
+    ...((manual.data?.length ?? 0) > 0
       ? ([
           {
             key: "manual-assets",
@@ -124,13 +159,24 @@
         >
           {formatCurrency(summary.netWorth)}
         </p>
-        <p class="mt-3 text-caption text-subtle">
-          {summary.hasUnknownCardBalance
-            ? "信用卡負債資料不完整"
-            : `已扣除 ${formatCurrency(summary.cardDebt)} 信用卡負債`}
-        </p>
+        <div class="mt-3 grid gap-1 text-caption text-subtle">
+          <p>
+            {summary.hasUnknownCardBalance
+              ? "信用卡負債資料不完整"
+              : summary.cardDebt < 0
+                ? `已計入 ${formatCurrency(-summary.cardDebt)} 信用卡溢繳餘額`
+                : `已扣除 ${formatCurrency(summary.cardDebt)} 信用卡負債`}
+          </p>
+          <p>
+            {summary.hasUnknownLoanBalance
+              ? "貸款負債資料不完整"
+              : `已扣除 ${formatCurrency(summary.loanDebt)} 貸款負債`}
+          </p>
+        </div>
       </div>
-      <div class="mt-6 grid grid-cols-3 gap-3 md:gap-6">
+      <div
+        class={`mt-6 grid gap-3 md:gap-6 ${cryptoPositions.length > 0 ? "grid-cols-2 md:grid-cols-4" : "grid-cols-3"}`}
+      >
         <div class="min-w-0">
           <p class="text-caption text-subtle">銀行與現金</p>
           <p
@@ -144,7 +190,7 @@
             {formatCurrency(summary.bankTotal)}
           </p>
           <p class="mt-1 text-caption text-subtle">
-            {summary.deposits.length} 個帳戶
+            {summary.depositAccountCount} 個帳戶
           </p>
         </div>
         <div class="min-w-0">
@@ -160,9 +206,27 @@
             {formatCurrency(summary.investmentTotal)}
           </p>
           <p class="mt-1 text-caption text-subtle">
-            {$investments.data?.length ?? 0} 個持倉
+            {holdingCount} 個持倉
           </p>
         </div>
+        {#if cryptoPositions.length > 0}
+          <div class="min-w-0">
+            <p class="text-caption text-subtle">加密貨幣</p>
+            <p
+              class="mt-2 text-lg font-medium tracking-tight tabular-nums md:hidden"
+            >
+              {formatCompactTwd(summary.cryptoTotal)}
+            </p>
+            <p
+              class="mt-2 hidden break-all text-2xl font-semibold tracking-tight tabular-nums md:block"
+            >
+              {formatCurrency(summary.cryptoTotal)}
+            </p>
+            <p class="mt-1 text-caption text-subtle">
+              {cryptoHoldingCount} 個持倉
+            </p>
+          </div>
+        {/if}
         <div class="min-w-0">
           <p class="text-caption text-subtle">其他資產</p>
           <p
@@ -176,7 +240,7 @@
             {formatCurrency(summary.manualTotal)}
           </p>
           <p class="mt-1 text-caption text-subtle">
-            {$manual.data?.length ?? 0} 筆
+            {manual.data?.length ?? 0} 筆
           </p>
         </div>
       </div>
@@ -225,8 +289,9 @@
                       {group.institution}
                     </strong>
                     <small class="mt-1 block truncate text-caption text-subtle">
-                      {group.accounts.length} 帳戶 · {group.cards.length} 卡片{group
-                        .foreignCurrencies.length
+                      {group.depositAccountCount} 帳戶 · {group.loans.length} 貸款
+                      · {group.cardAccountCount}
+                      信用卡帳戶{group.foreignCurrencies.length
                         ? ` · 含 ${group.foreignCurrencies.join("、")}`
                         : ""}
                     </small>
@@ -238,20 +303,33 @@
                         : "—"}
                     </strong>
                     <small
-                      class={`mt-1 block text-caption tabular-nums ${group.cards.length ? "text-coral" : "text-subtle"}`}
+                      class={`mt-1 block text-caption tabular-nums ${group.cards.length || group.loans.length ? "text-coral" : "text-subtle"}`}
                     >
-                      {group.cards.length
-                        ? group.hasUnknownCardBalance
-                          ? "負債資料不完整"
-                          : `負債 ${formatCurrency(-group.debtTotalTwd)}`
-                        : "無信用卡"}
+                      {#if group.cards.length && group.loans.length}
+                        {group.hasUnknownCardBalance
+                          ? "信用卡資料不完整"
+                          : `${group.debtTotalTwd < 0 ? "溢繳" : "卡債"} ${formatCurrency(-group.debtTotalTwd)}`}
+                        · {group.hasUnknownLoanBalance
+                          ? "貸款資料不完整"
+                          : `貸款 ${formatCurrency(group.loanDebtTotalTwd)}`}
+                      {:else if group.loans.length}
+                        {group.hasUnknownLoanBalance
+                          ? "貸款資料不完整"
+                          : `貸款 ${formatCurrency(group.loanDebtTotalTwd)}`}
+                      {:else if group.cards.length}
+                        {group.hasUnknownCardBalance
+                          ? "信用卡資料不完整"
+                          : `${group.debtTotalTwd < 0 ? "溢繳" : "卡債"} ${formatCurrency(-group.debtTotalTwd)}`}
+                      {:else}
+                        無負債帳戶
+                      {/if}
                     </small>
                   </span>
                 </button>
               {/each}
             {/if}
 
-            {#if ($investments.data?.length ?? 0) > 0}
+            {#if showInvestments}
               <button
                 class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === "investments" ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
                 type="button"
@@ -261,7 +339,7 @@
                 <span class="min-w-0">
                   <strong class="block text-sm">投資</strong>
                   <small class="mt-1 block text-caption text-subtle">
-                    {$investments.data?.length ?? 0} 個持倉 · 持倉與交易紀錄
+                    {holdingCount} 個持倉 · 持倉與交易紀錄
                   </small>
                 </span>
                 <strong class="text-sm tabular-nums text-steel">
@@ -270,7 +348,28 @@
               </button>
             {/if}
 
-            {#if ($manual.data?.length ?? 0) > 0}
+            {#if cryptoPositions.length > 0}
+              <button
+                class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === "crypto" ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
+                type="button"
+                aria-pressed={activeKey === "crypto"}
+                onclick={() => (selectedKey = "crypto")}
+              >
+                <span class="min-w-0">
+                  <strong class="block text-sm">加密貨幣</strong>
+                  <small class="mt-1 block text-caption text-subtle">
+                    {cryptoHoldingCount} 個持倉 · {exchangeCount} 個交易所
+                  </small>
+                </span>
+                <strong
+                  class={`text-sm tabular-nums ${summary.cryptoTotal < 0 ? "text-coral" : "text-steel"}`}
+                >
+                  {formatCurrency(summary.cryptoTotal)}
+                </strong>
+              </button>
+            {/if}
+
+            {#if (manual.data?.length ?? 0) > 0}
               <button
                 class={`grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-ink/8 px-3 py-2 text-left transition hover:bg-ink/3 ${activeKey === "manual-assets" ? "bg-ink/4 shadow-[inset_3px_0_0_var(--color-steel)]" : ""}`}
                 type="button"
@@ -280,7 +379,7 @@
                 <span class="min-w-0">
                   <strong class="block text-sm">其他資產</strong>
                   <small class="mt-1 block text-caption text-subtle">
-                    {$manual.data?.length ?? 0} 筆 · 手動維護估值
+                    {manual.data?.length ?? 0} 筆 · 手動維護估值
                   </small>
                 </span>
                 <strong class="text-sm tabular-nums text-moss">
@@ -295,17 +394,26 @@
           {#if activeItem?.kind === "institution"}
             <InstitutionDetails
               group={activeItem.group}
-              bills={$bills.data ?? []}
-              billsPending={$bills.isPending}
-              billsError={$bills.isError}
+              bills={bills.data ?? []}
+              billsPending={bills.isPending}
+              billsError={bills.isError}
+              {api}
+              accounts={bank.data ?? []}
             />
           {:else if activeItem?.kind === "investments"}
             <InvestmentWorkspace
-              positions={$investments.data ?? []}
-              trades={$trades.data ?? []}
+              positions={securityPositions}
+              rates={rateLookup}
+              trades={trades.data ?? []}
               total={summary.investmentTotal}
-              tradesPending={$trades.isPending}
-              tradesError={$trades.isError}
+              tradesPending={trades.isPending}
+              tradesError={trades.isError}
+            />
+          {:else if activeItem?.kind === "crypto"}
+            <CryptoWorkspace
+              positions={cryptoPositions}
+              rates={rateLookup}
+              total={summary.cryptoTotal}
             />
           {:else if activeItem?.kind === "manual-assets"}
             <ManualAssets {api} variant="embedded" />
@@ -348,8 +456,9 @@
                     {group.institution}
                   </strong>
                   <small class="mt-1 block truncate text-caption text-subtle">
-                    {group.accounts.length} 帳戶 · {group.cards.length} 卡片{group
-                      .foreignCurrencies.length
+                    {group.depositAccountCount} 帳戶 · {group.loans.length} 貸款 ·
+                    {group.cardAccountCount}
+                    信用卡帳戶{group.foreignCurrencies.length
                       ? ` · 含 ${group.foreignCurrencies.join("、")}`
                       : ""}
                   </small>
@@ -361,13 +470,26 @@
                       : "—"}
                   </strong>
                   <small
-                    class={`mt-1 block text-caption tabular-nums ${group.cards.length ? "text-coral" : "text-subtle"}`}
+                    class={`mt-1 block text-caption tabular-nums ${group.cards.length || group.loans.length ? "text-coral" : "text-subtle"}`}
                   >
-                    {group.cards.length
-                      ? group.hasUnknownCardBalance
-                        ? "負債資料不完整"
-                        : `負債 ${formatCurrency(-group.debtTotalTwd)}`
-                      : "無信用卡"}
+                    {#if group.cards.length && group.loans.length}
+                      {group.hasUnknownCardBalance
+                        ? "信用卡資料不完整"
+                        : `${group.debtTotalTwd < 0 ? "溢繳" : "卡債"} ${formatCurrency(-group.debtTotalTwd)}`}
+                      · {group.hasUnknownLoanBalance
+                        ? "貸款資料不完整"
+                        : `貸款 ${formatCurrency(group.loanDebtTotalTwd)}`}
+                    {:else if group.loans.length}
+                      {group.hasUnknownLoanBalance
+                        ? "貸款資料不完整"
+                        : `貸款 ${formatCurrency(group.loanDebtTotalTwd)}`}
+                    {:else if group.cards.length}
+                      {group.hasUnknownCardBalance
+                        ? "信用卡資料不完整"
+                        : `${group.debtTotalTwd < 0 ? "溢繳" : "卡債"} ${formatCurrency(-group.debtTotalTwd)}`}
+                    {:else}
+                      無負債帳戶
+                    {/if}
                   </small>
                 </span>
                 <ChevronRight
@@ -378,9 +500,11 @@
                 <div class="border-t border-ink/8 pb-5 pl-4 pt-3">
                   <InstitutionDetails
                     {group}
-                    bills={$bills.data ?? []}
-                    billsPending={$bills.isPending}
-                    billsError={$bills.isError}
+                    bills={bills.data ?? []}
+                    billsPending={bills.isPending}
+                    billsError={bills.isError}
+                    {api}
+                    accounts={bank.data ?? []}
                     compact
                   />
                 </div>
@@ -389,13 +513,13 @@
           {/each}
         {/if}
 
-        {#if ($investments.data?.length ?? 0) > 0}
+        {#if showInvestments}
           <div class="border-t border-ink/10 pt-5">
             <div class="flex items-start justify-between gap-3 pb-1">
               <div class="min-w-0">
                 <h2 class="text-base font-semibold">投資</h2>
                 <p class="mt-1 text-caption text-subtle">
-                  {$investments.data?.length ?? 0} 個持倉 · 交易紀錄
+                  {holdingCount} 個持倉 · 交易紀錄
                 </p>
               </div>
               <strong
@@ -405,12 +529,36 @@
               </strong>
             </div>
             <InvestmentWorkspace
-              positions={$investments.data ?? []}
-              trades={$trades.data ?? []}
+              positions={securityPositions}
+              rates={rateLookup}
+              trades={trades.data ?? []}
               total={summary.investmentTotal}
-              tradesPending={$trades.isPending}
-              tradesError={$trades.isError}
+              tradesPending={trades.isPending}
+              tradesError={trades.isError}
               compact
+            />
+          </div>
+        {/if}
+
+        {#if cryptoPositions.length > 0}
+          <div class="border-t border-ink/10 pt-5">
+            <div class="flex items-start justify-between gap-3 pb-1">
+              <div class="min-w-0">
+                <h2 class="text-base font-semibold">加密貨幣</h2>
+                <p class="mt-1 text-caption text-subtle">
+                  {cryptoHoldingCount} 個持倉 · {exchangeCount} 個交易所
+                </p>
+              </div>
+              <strong
+                class={`text-lg font-medium tracking-tight tabular-nums ${summary.cryptoTotal < 0 ? "text-coral" : "text-steel"}`}
+              >
+                {formatCurrency(summary.cryptoTotal)}
+              </strong>
+            </div>
+            <InvestmentHoldings
+              positions={cryptoPositions}
+              rates={rateLookup}
+              grouped
             />
           </div>
         {/if}
@@ -420,7 +568,7 @@
             <div class="min-w-0">
               <h2 class="text-base font-semibold">其他資產</h2>
               <p class="mt-1 text-caption text-subtle">
-                {$manual.data?.length ?? 0} 筆 · 估值歷史
+                {manual.data?.length ?? 0} 筆 · 估值歷史
               </p>
             </div>
             <div class="shrink-0 text-right">

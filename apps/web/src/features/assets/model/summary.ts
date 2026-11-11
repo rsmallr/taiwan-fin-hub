@@ -1,40 +1,47 @@
+import { connectorBankCode } from "@taiwan-fin-hub/shared";
 import type { ExchangeRateRow, ManualAssetRow } from "@/data/assets/types";
+import {
+  cardAccountCount,
+  depositAccountCount,
+} from "@/data/bank/account-groups";
 import type { BankAccountRow, BankData } from "@/data/bank/types";
+import { isCryptoPosition } from "@/data/investments/holding-groups";
 import type { InvestmentRow } from "@/data/investments/types";
 import { missingExchangeRateCurrencies } from "@/shared/format/financial";
-
-const CONNECTOR_BANK_CODES: Record<string, string> = {
-  firstbank: "007",
-  hncb: "008",
-  cathaybk: "013",
-  obank: "048",
-  skbank: "103",
-  sinopac: "807",
-  esun: "808",
-  taishin: "812",
-  ctbc: "822",
-  kgibank: "809",
-};
 
 export interface InstitutionAssetGroup {
   key: string;
   institution: string;
   accounts: BankAccountRow[];
   cards: BankAccountRow[];
+  loans: BankAccountRow[];
+  /** 存款帳戶數；同一帳號的不同幣別只算一個，與銀行的帳戶數一致。 */
+  depositAccountCount: number;
+  /** 信用卡帳戶數；同一帳戶的不同幣別（例如台幣與日幣帳單）只算一個。 */
+  cardAccountCount: number;
   assetTotalTwd: number;
   debtTotalTwd: number;
+  loanDebtTotalTwd: number;
+  loanCategoryTotals: { housing: number; personal: number; other: number };
   hasUnknownCardBalance: boolean;
+  hasUnknownLoanBalance: boolean;
   foreignCurrencies: string[];
 }
 
 export interface AssetSummary {
   deposits: BankAccountRow[];
+  depositAccountCount: number;
   cards: BankAccountRow[];
+  loans: BankAccountRow[];
   bankTotal: number;
+  /** 集保等證券持倉（不含加密貨幣）。 */
   investmentTotal: number;
+  cryptoTotal: number;
   manualTotal: number;
   cardDebt: number;
+  loanDebt: number;
   hasUnknownCardBalance: boolean;
+  hasUnknownLoanBalance: boolean;
   grossAssets: number;
   netWorth: number;
   institutionGroups: InstitutionAssetGroup[];
@@ -42,8 +49,7 @@ export interface AssetSummary {
 }
 
 function institutionKey(account: BankAccountRow) {
-  const bankCode =
-    account.bankCode ?? CONNECTOR_BANK_CODES[account.connectorId];
+  const bankCode = account.bankCode ?? connectorBankCode(account.connectorId);
   return bankCode ? `bank:${bankCode}` : `connector:${account.connectorId}`;
 }
 
@@ -64,10 +70,14 @@ export function calculateAssetSummary({
   const toTwd = (value: number, currency: string) =>
     currency === "TWD" ? value : value * (rateValues[currency] ?? 0);
   const deposits = bank.accounts.filter(
-    (account) => account.accountType !== "credit",
+    (account) =>
+      account.accountType !== "credit" && account.accountType !== "loan",
   );
   const cards = bank.accounts.filter(
     (account) => account.accountType === "credit",
+  );
+  const loans = bank.accounts.filter(
+    (account) => account.accountType === "loan",
   );
   const missingCurrencies = missingExchangeRateCurrencies(
     [
@@ -76,6 +86,10 @@ export function calculateAssetSummary({
         amount: account.balance ?? 0,
       })),
       ...cards.map((account) => ({
+        currency: account.currency,
+        amount: Math.abs(account.balance ?? 0),
+      })),
+      ...loans.map((account) => ({
         currency: account.currency,
         amount: Math.abs(account.balance ?? 0),
       })),
@@ -94,22 +108,30 @@ export function calculateAssetSummary({
     (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
     0,
   );
-  const investmentTotal = investments.reduce(
-    (sum, item) =>
-      sum +
-      toTwd((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency),
-    0,
+  const positionTotal = (rows: InvestmentRow[]) =>
+    rows.reduce(
+      (sum, item) =>
+        sum +
+        toTwd((item.marketValue ?? 0) + (item.cashBalance ?? 0), item.currency),
+      0,
+    );
+  const investmentTotal = positionTotal(
+    investments.filter((item) => !isCryptoPosition(item)),
   );
+  const cryptoTotal = positionTotal(investments.filter(isCryptoPosition));
   const manualTotal = manualAssets.reduce(
     (sum, item) => sum + toTwd(item.value ?? 0, item.currency),
     0,
   );
   const cardDebt = cards.reduce(
-    (sum, account) =>
-      sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
+    (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
     0,
   );
-  const grossAssets = bankTotal + investmentTotal + manualTotal;
+  const loanDebt = loans.reduce(
+    (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
+    0,
+  );
+  const grossAssets = bankTotal + investmentTotal + cryptoTotal + manualTotal;
 
   const groups = bank.accounts.reduce<Record<string, BankAccountRow[]>>(
     (result, account) => {
@@ -121,10 +143,14 @@ export function calculateAssetSummary({
   const institutionGroups = Object.entries(groups)
     .map(([key, groupedAccounts]) => {
       const accounts = groupedAccounts.filter(
-        (account) => account.accountType !== "credit",
+        (account) =>
+          account.accountType !== "credit" && account.accountType !== "loan",
       );
       const cards = groupedAccounts.filter(
         (account) => account.accountType === "credit",
+      );
+      const loans = groupedAccounts.filter(
+        (account) => account.accountType === "loan",
       );
       return {
         key,
@@ -143,16 +169,47 @@ export function calculateAssetSummary({
             Math.abs(toTwd(b.balance ?? 0, b.currency)) -
             Math.abs(toTwd(a.balance ?? 0, a.currency)),
         ),
+        depositAccountCount: depositAccountCount(accounts),
+        cardAccountCount: cardAccountCount(cards),
         assetTotalTwd: accounts.reduce(
           (sum, account) => sum + toTwd(account.balance ?? 0, account.currency),
           0,
         ),
         hasUnknownCardBalance: cards.some((card) => card.balance == null),
         debtTotalTwd: cards.reduce(
-          (sum, account) =>
-            sum + Math.abs(toTwd(account.balance ?? 0, account.currency)),
+          (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
           0,
         ),
+        loans: [...loans].sort(
+          (a, b) =>
+            Math.abs(toTwd(b.balance ?? 0, b.currency)) -
+            Math.abs(toTwd(a.balance ?? 0, a.currency)),
+        ),
+        loanDebtTotalTwd: loans.reduce(
+          (sum, account) => sum - toTwd(account.balance ?? 0, account.currency),
+          0,
+        ),
+        loanCategoryTotals: {
+          housing: loans
+            .filter((loan) => loan.loanCategory === "housing")
+            .reduce(
+              (sum, loan) => sum - toTwd(loan.balance ?? 0, loan.currency),
+              0,
+            ),
+          personal: loans
+            .filter((loan) => loan.loanCategory === "personal")
+            .reduce(
+              (sum, loan) => sum - toTwd(loan.balance ?? 0, loan.currency),
+              0,
+            ),
+          other: loans
+            .filter((loan) => loan.loanCategory === "other")
+            .reduce(
+              (sum, loan) => sum - toTwd(loan.balance ?? 0, loan.currency),
+              0,
+            ),
+        },
+        hasUnknownLoanBalance: loans.some((loan) => loan.balance == null),
         foreignCurrencies: [
           ...new Set(
             groupedAccounts
@@ -165,20 +222,26 @@ export function calculateAssetSummary({
     .sort(
       (a, b) =>
         b.assetTotalTwd - a.assetTotalTwd ||
+        b.loanDebtTotalTwd - a.loanDebtTotalTwd ||
         b.debtTotalTwd - a.debtTotalTwd ||
         a.institution.localeCompare(b.institution, "zh-TW"),
     );
 
   return {
     deposits,
+    depositAccountCount: depositAccountCount(deposits),
     cards,
+    loans,
     bankTotal,
     investmentTotal,
+    cryptoTotal,
     manualTotal,
     cardDebt,
+    loanDebt,
     hasUnknownCardBalance: cards.some((card) => card.balance == null),
+    hasUnknownLoanBalance: loans.some((loan) => loan.balance == null),
     grossAssets,
-    netWorth: grossAssets - cardDebt,
+    netWorth: grossAssets - cardDebt - loanDebt,
     institutionGroups,
     missingCurrencies,
   };

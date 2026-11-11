@@ -1,14 +1,15 @@
 import {
   captureStagedActivityBefore,
   captureStagedActivityAfter,
-} from "./activity-capture";
+} from "./reports/activity-capture";
 import {
   createDrizzle,
   sanitizeDatabaseError,
   syncWriteStaging,
-} from "@taiwan-fin-hub/db";
+} from "../../db";
 import { eq, lt } from "drizzle-orm";
-import type { SyncNewRecordCounts } from "@taiwan-fin-hub/core";
+import type { ConnectorId, SyncNewRecordCounts } from "@taiwan-fin-hub/shared";
+import { reportSyncProgress } from "../../sources/sync-progress";
 
 export type SyncEntityType =
   | "invoice"
@@ -25,6 +26,11 @@ export type SyncWriteRecord = {
   entityType: SyncEntityType;
   recordKey: string;
   payload: Record<string, unknown>;
+};
+
+type SettingsGuard = {
+  connectorId: ConnectorId;
+  encryptedConfig: string;
 };
 
 type EntityConfig = {
@@ -109,6 +115,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "institution_name",
       "account_name",
       "account_type",
+      "loan_category",
+      "loan_interest_rate",
       "currency",
       "credit_limit",
       "opened_date",
@@ -116,6 +124,10 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "inactive_at",
       "bank_code",
       "account_last4",
+      "autopay_status",
+      "autopay_bank_code",
+      "autopay_account_last4",
+      "autopay_account_source_id",
       "raw_payload",
       "created_at",
       "updated_at",
@@ -125,6 +137,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "institution_name",
       "account_name",
       "account_type",
+      "loan_category",
+      "loan_interest_rate",
       "currency",
       "credit_limit",
       "opened_date",
@@ -132,6 +146,10 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "inactive_at",
       "bank_code",
       "account_last4",
+      "autopay_status",
+      "autopay_bank_code",
+      "autopay_account_last4",
+      "autopay_account_source_id",
       "raw_payload",
       "updated_at",
     ],
@@ -148,6 +166,10 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "statement_balance",
       "payment_due_date",
       "statement_closing_date",
+      "loan_payment_amount",
+      "loan_payment_status",
+      "loan_installments_paid",
+      "loan_installments_total",
       "no_payment_needed",
       "currency",
       "as_of_at",
@@ -162,6 +184,10 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "statement_balance",
       "payment_due_date",
       "statement_closing_date",
+      "loan_payment_amount",
+      "loan_payment_status",
+      "loan_installments_paid",
+      "loan_installments_total",
       "no_payment_needed",
       "currency",
       "as_of_at",
@@ -184,6 +210,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "counterparty",
       "status",
       "transfer_peer_id",
+      "card_last4",
+      "card_name",
       "raw_payload",
       "created_at",
       "updated_at",
@@ -198,6 +226,8 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "counterparty",
       "status",
       "transfer_peer_id",
+      "card_last4",
+      "card_name",
       "raw_payload",
       "updated_at",
     ],
@@ -244,9 +274,14 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "asset_type",
       "symbol",
       "name",
+      "broker_no",
+      "broker_account",
+      "market",
       "quantity",
       "market_value",
       "cash_balance",
+      "cost_basis",
+      "unrealized_pnl",
       "currency",
       "as_of_date",
       "raw_payload",
@@ -258,9 +293,14 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "asset_type",
       "symbol",
       "name",
+      "broker_no",
+      "broker_account",
+      "market",
       "quantity",
       "market_value",
       "cash_balance",
+      "cost_basis",
+      "unrealized_pnl",
       "currency",
       "raw_payload",
       "updated_at",
@@ -286,6 +326,7 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "quantity",
       "price",
       "amount",
+      "realized_pnl",
       "currency",
       "raw_payload",
       "created_at",
@@ -306,6 +347,7 @@ const ENTITY_CONFIG: Record<SyncEntityType, EntityConfig> = {
       "quantity",
       "price",
       "amount",
+      "realized_pnl",
       "currency",
       "raw_payload",
       "updated_at",
@@ -381,6 +423,7 @@ export async function promoteStagedSyncWrite(
   input: {
     runId: string;
     entityTypes: readonly SyncEntityType[];
+    settingsGuard?: SettingsGuard;
     beforePromoteStatements?: D1PreparedStatement[];
     afterPromoteStatements?: D1PreparedStatement[];
     finalizeStatements?: D1PreparedStatement[];
@@ -400,11 +443,38 @@ export async function promoteStagedSyncWrite(
         entityType as keyof typeof NEW_RECORD_ENTITIES,
       ),
     }));
-  const countResultOffset = input.beforePromoteStatements?.length ?? 0;
+  const beforePromoteStatements = [
+    ...(input.settingsGuard
+      ? [
+          db
+            .prepare(
+              `DELETE FROM sync_write_staging
+               WHERE run_id = ? AND NOT EXISTS (
+                 SELECT 1 FROM connector_settings
+                 WHERE connector_id = ? AND encrypted_config = ?
+               )`,
+            )
+            .bind(
+              input.runId,
+              input.settingsGuard.connectorId,
+              input.settingsGuard.encryptedConfig,
+            ),
+        ]
+      : []),
+    ...ENTITY_ORDER.filter(
+      (entityType) =>
+        entityTypes.has(entityType) &&
+        ENTITY_CONFIG[entityType].conflictColumns.includes("account_id"),
+    ).map((entityType) =>
+      followMovedAccountStatement(db, input.runId, entityType),
+    ),
+    ...(input.beforePromoteStatements ?? []),
+  ];
+  const countResultOffset = beforePromoteStatements.length;
   // 保留整組原生 D1 batch：跨檔案 factories、計數 offset、promotion、
   // lifecycle reconciliation、finalize/cursor 與 cleanup 必須維持順序及同一原子邊界。
   const batchResults = await db.batch([
-    ...(input.beforePromoteStatements ?? []),
+    ...beforePromoteStatements,
     ...newRecordCountStatements.map(({ statement }) => statement),
     ...captureStagedActivityBefore(
       db,
@@ -437,11 +507,13 @@ export async function persistStagedSyncWrite(
   db: D1Database,
   input: {
     records: SyncWriteRecord[];
+    settingsGuard?: SettingsGuard;
     beforePromoteStatements?: D1PreparedStatement[];
     afterPromoteStatements?: D1PreparedStatement[];
     finalizeStatements?: D1PreparedStatement[];
   },
 ) {
+  reportSyncProgress("saving");
   const runId = crypto.randomUUID();
   await createDrizzle(db)
     .delete(syncWriteStaging)
@@ -461,6 +533,7 @@ export async function persistStagedSyncWrite(
     return await promoteStagedSyncWrite(db, {
       runId,
       entityTypes: input.records.map((record) => record.entityType),
+      settingsGuard: input.settingsGuard,
       beforePromoteStatements: input.beforePromoteStatements,
       afterPromoteStatements: input.afterPromoteStatements,
       finalizeStatements: input.finalizeStatements,
@@ -473,6 +546,30 @@ export async function persistStagedSyncWrite(
       .catch(() => undefined);
     throw error;
   }
+}
+
+/**
+ * id 由寫入當下的帳戶組成，但對帳（例如單卡摘要帳戶併回實體卡）會把既有資料
+ * 搬到別的帳戶而保留 id。來源再次送出相同 id 時沿用既有列目前的帳戶，
+ * 讓計數、活動擷取與 upsert 都對到同一列，而不是新增後撞上 id 主鍵。
+ */
+function followMovedAccountStatement(
+  db: D1Database,
+  runId: string,
+  entityType: SyncEntityType,
+) {
+  const { table } = ENTITY_CONFIG[entityType];
+  return db
+    .prepare(
+      `UPDATE sync_write_staging
+       SET payload = json_set(payload, '$.account_id', target.account_id)
+       FROM ${table} target
+       WHERE sync_write_staging.run_id = ?
+         AND sync_write_staging.entity_type = ?
+         AND target.id = json_extract(sync_write_staging.payload, '$.id')
+         AND target.account_id IS NOT json_extract(sync_write_staging.payload, '$.account_id')`,
+    )
+    .bind(runId, entityType);
 }
 
 function newRecordCountStatement(
@@ -520,14 +617,52 @@ function promotionStatement(
             AND date(invoices.invoice_date, '+8 hours') = excluded.invoice_date
           THEN invoices.invoice_date ELSE excluded.invoice_date END`;
       if (entityType === "credit_card_bill") {
-        if (column === "paid_amount")
-          return "paid_amount = COALESCE(excluded.paid_amount, credit_card_bills.paid_amount)";
+        // Partial bill responses must not erase previously confirmed fields.
+        if (
+          [
+            "statement_amount",
+            "minimum_payment",
+            "paid_amount",
+            "payment_due_date",
+            "statement_closing_date",
+          ].includes(column)
+        )
+          return `${column} = COALESCE(excluded.${column}, credit_card_bills.${column})`;
         if (column === "is_paid")
           return `is_paid = CASE
             WHEN credit_card_bills.is_paid = 1 OR excluded.is_paid = 1 THEN 1
             ELSE COALESCE(excluded.is_paid, credit_card_bills.is_paid)
           END`;
       }
+      if (entityType === "bank_account" && column === "currency")
+        return "currency = COALESCE(NULLIF(excluded.currency, ''), bank_accounts.currency)";
+      if (entityType === "bank_account" && column.startsWith("autopay_"))
+        // 來源本次沒取得扣款帳戶時整組保留；有明確結果（含未設定）時整組覆寫，
+        // 避免新舊銀行代碼與末四碼混在一起。
+        return `${column} = CASE WHEN excluded.autopay_status IS NULL
+          THEN bank_accounts.${column} ELSE excluded.${column} END`;
+      if (
+        entityType === "bank_account" &&
+        [
+          "account_name",
+          "loan_category",
+          "loan_interest_rate",
+          "opened_date",
+          "maturity_date",
+        ].includes(column)
+      )
+        return `${column} = COALESCE(excluded.${column}, bank_accounts.${column})`;
+      if (
+        entityType === "bank_balance_snapshot" &&
+        [
+          "payment_due_date",
+          "loan_payment_amount",
+          "loan_payment_status",
+          "loan_installments_paid",
+          "loan_installments_total",
+        ].includes(column)
+      )
+        return `${column} = COALESCE(excluded.${column}, bank_balance_snapshots.${column})`;
       if (entityType !== "bank_transaction")
         return `${column} = excluded.${column}`;
       if (column === "transfer_peer_id")

@@ -1,7 +1,7 @@
 import type {
   NotificationPreferences,
   PushSubscriptionInput,
-} from "@taiwan-fin-hub/core";
+} from "@taiwan-fin-hub/shared";
 import { zValidator } from "@hono/zod-validator";
 import type { Hono } from "hono";
 import { z } from "zod";
@@ -19,7 +19,7 @@ import {
 } from "./service";
 
 const pushSubscriptionSchema = z.object({
-  endpoint: z.string().url().max(2048),
+  endpoint: z.url().max(2048),
   expirationTime: z.number().int().nonnegative().nullable().optional(),
   keys: z.object({
     p256dh: z.string().min(1).max(512),
@@ -31,6 +31,7 @@ const preferencesSchema = z.object({
   success: z.boolean(),
   failed: z.boolean(),
   needsUserAction: z.boolean(),
+  paymentDue: z.boolean().optional(),
 });
 
 export const notificationRoutes = honoFactory.createApp();
@@ -76,8 +77,12 @@ function registerNotificationRoutes(api: Hono<AppBindings>) {
       ),
     ),
     async (c) => {
-      const input = c.req.valid("json") as NotificationPreferences;
-      return c.json(await updateNotificationPreferences(c.env, input));
+      return c.json(
+        (await updateNotificationPreferences(
+          c.env,
+          c.req.valid("json"),
+        )) satisfies NotificationPreferences,
+      );
     },
   );
 

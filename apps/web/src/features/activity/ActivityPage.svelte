@@ -1,12 +1,12 @@
 <script lang="ts">
-  import { buildActivityItems } from "@taiwan-fin-hub/core";
+  import { buildActivityItems } from "@taiwan-fin-hub/shared";
   import { onMount, tick } from "svelte";
-  import { toStore } from "svelte/store";
   import {
     createMutation,
     createInfiniteQuery,
     createQuery,
     useQueryClient,
+    type InfiniteData,
   } from "@tanstack/svelte-query";
   import {
     Search,
@@ -16,6 +16,7 @@
     Unlink2,
     ArrowLeft,
     ChevronRight,
+    StickyNote,
     X,
   } from "@lucide/svelte";
   import Button from "@/shared/ui/Button.svelte";
@@ -26,13 +27,19 @@
   import Select from "@/shared/ui/Select.svelte";
   import TabsList from "@/shared/ui/TabsList.svelte";
   import TabsTrigger from "@/shared/ui/TabsTrigger.svelte";
-  import { activitySearchQuery } from "@/data/activity/queries";
+  import {
+    activitySearchQuery,
+    type ActivitySearchPage,
+  } from "@/data/activity/queries";
   import ActivitySearchFilters from "./components/ActivitySearchFilters.svelte";
   import SearchHighlight from "./components/SearchHighlight.svelte";
+  import CategoryBadge from "./components/CategoryBadge.svelte";
   import ActivityAmount from "./components/ActivityAmount.svelte";
   import ActivityCategoryChart from "./components/ActivityCategoryChart.svelte";
+  import ActivityNoteEditor from "./components/ActivityNoteEditor.svelte";
   import CalculationUpdateDialog from "./components/CalculationUpdateDialog.svelte";
   import CategoryUpdateDialog from "./components/CategoryUpdateDialog.svelte";
+  import CategoryDetailSheet from "./components/CategoryDetailSheet.svelte";
   import type { ApiClient } from "@/shared/api/client";
   import { queryKeys } from "@/shared/api/query-keys";
   import { exchangeRatesQuery } from "@/data/assets/queries";
@@ -72,17 +79,21 @@
   } from "./model/filter";
   import {
     buildActivityCategorySlices,
-    activityCashAmountTwd,
+    activityFlowTotalTwd,
     activityDisplayAmount,
     activityAmountTwd,
   } from "./model/chart";
   import {
     deduplicateBankTransactions,
     invoiceTransactionCandidates,
+    invoiceTransactionDayGap,
     matchInvoicesToTransactions,
+    MANUAL_INVOICE_MATCH_MAX_DAYS,
   } from "@/data/activity/matching";
   import { getActivityDataStatus } from "./model/load-status";
+  import { createCategorySheet } from "./model/category-sheet.svelte";
   import {
+    flowAmountSign,
     formatCompactTwd,
     formatCurrency,
     formatDate,
@@ -90,7 +101,6 @@
     rateMap,
   } from "@/shared/format/financial";
   import { recentMonthRange, recentMonthKeys } from "@/shared/date-range";
-  import { swipeBack } from "@/shared/actions/swipe-back";
   let { api }: { api: ApiClient } = $props();
   const initialSelectedMonth = currentActivityMonthKey();
   // Keep API ranges and month options anchored to the same Taipei month key.
@@ -99,16 +109,20 @@
   );
   let selectedMonth = $state(initialSelectedMonth);
   const activityRange = recentMonthRange(6, activityMonthAnchor);
-  const bank = createQuery(bankRangeQuery(() => api, activityRange));
-  const invoices = createQuery(invoicesRangeQuery(() => api, activityRange));
-  const invoiceMappings = createQuery(
-    invoiceTransactionMappingsQuery(() => api),
+  const bank = createQuery(() => bankRangeQuery(() => api, activityRange));
+  const invoices = createQuery(() =>
+    invoicesRangeQuery(() => api, activityRange),
   );
-  const trades = createQuery(
+  const invoiceMappings = createQuery(() =>
+    invoiceTransactionMappingsQuery(() => api, activityRange),
+  );
+  const trades = createQuery(() =>
     investmentTransactionsRangeQuery(() => api, activityRange),
   );
-  const rates = createQuery(exchangeRatesQuery(() => api));
-  const categoryRows = createQuery(classificationCategoriesQuery(() => api));
+  const rates = createQuery(() => exchangeRatesQuery(() => api));
+  const categoryRows = createQuery(() =>
+    classificationCategoriesQuery(() => api),
+  );
   const qc = useQueryClient();
   let flow = $state<ActivityFlowFilter>("all");
   let source = $state<ActivitySourceFilter>("all");
@@ -146,17 +160,15 @@
       searchDates.from && searchDates.to && searchDates.from > searchDates.to,
     ),
   );
-  const searchResults = createInfiniteQuery(
-    toStore(() =>
-      activitySearchQuery(
-        () => api,
-        submittedSearch,
-        searchDates.from,
-        searchDates.to,
-        source,
-        flow,
-        searchCategory,
-      ),
+  const searchResults = createInfiniteQuery(() =>
+    activitySearchQuery(
+      () => api,
+      submittedSearch,
+      searchDates.from,
+      searchDates.to,
+      source,
+      flow,
+      searchCategory,
     ),
   );
   // Adjacent result pages can share a day and therefore repeat matching context.
@@ -166,28 +178,28 @@
   const bankData = $derived(
     searching
       ? {
-          accounts: $searchResults.data?.pages[0]?.bank.accounts ?? [],
+          accounts: searchResults.data?.pages[0]?.bank.accounts ?? [],
           transactions: uniqueRows(
-            $searchResults.data?.pages.flatMap(
+            searchResults.data?.pages.flatMap(
               (page) => page.bank.transactions,
             ) ?? [],
           ),
         }
-      : $bank.data,
+      : bank.data,
   );
   const invoiceData = $derived(
     searching
       ? uniqueRows(
-          $searchResults.data?.pages.flatMap((page) => page.invoices) ?? [],
+          searchResults.data?.pages.flatMap((page) => page.invoices) ?? [],
         )
-      : $invoices.data,
+      : invoices.data,
   );
   const tradeData = $derived(
     searching
       ? uniqueRows(
-          $searchResults.data?.pages.flatMap((page) => page.trades) ?? [],
+          searchResults.data?.pages.flatMap((page) => page.trades) ?? [],
         )
-      : $trades.data,
+      : trades.data,
   );
   let savedMonthly: {
     flow: ActivityFlowFilter;
@@ -207,6 +219,7 @@
     flow = "all";
     source = "all";
     selectedCategory = null;
+    categorySheet.key = null;
     searchTime = "all";
     searchFrom = "";
     searchTo = "";
@@ -303,9 +316,11 @@
         search = state.activitySearch.query;
         submittedSearch = search;
         detailKey = state.activityDetail ?? null;
+        categorySheet.key = state.categorySheet ?? null;
       } else {
         restoreMonthly();
         detailKey = state?.activityDetail ?? null;
+        categorySheet.key = state?.categorySheet ?? null;
       }
     };
     restoreHistory();
@@ -314,6 +329,14 @@
       window.removeEventListener("popstate", restoreHistory);
     };
   });
+  const categorySheet = createCategorySheet({
+    getSlices: (flow) => (flow === "income" ? incomeSlices : expenseSlices),
+    chooseCategory,
+    isCategorySelected: (flow, category) =>
+      selectedCategory?.flow === flow && selectedCategory.category === category,
+    getListElement: () => activityListEl,
+  });
+  let activityListEl = $state<HTMLElement>();
   let selectedCategory = $state<ActivityCategoryFilter | null>(null);
   let pending = $state<PendingCategoryUpdate | null>(null);
   let pendingCalculation = $state<PendingCalculationUpdate | null>(null);
@@ -340,53 +363,55 @@
     { id: "tax", label: "稅務" },
     { id: "software", label: "軟體服務" },
     { id: "utilities", label: "生活繳費" },
+    { id: "donation", label: "捐款" },
     { id: "other-income", label: "其他收入" },
+    { id: "reward", label: "回饋" },
     { id: "other", label: "未分類" },
   ];
   const categoryOptions = $derived(
-    $categoryRows.data?.length ? $categoryRows.data : fallbackCategories,
+    categoryRows.data?.length ? categoryRows.data : fallbackCategories,
   );
   const activityDataStatus = $derived(
     getActivityDataStatus(
       searching
         ? [
-            { label: "搜尋結果", isError: $searchResults.isError },
-            { label: "發票配對", isError: $invoiceMappings.isError },
+            { label: "搜尋結果", isError: searchResults.isError },
+            { label: "發票配對", isError: invoiceMappings.isError },
           ]
         : [
             {
               label: "銀行與信用卡",
-              isError: $bank.isError,
+              isError: bank.isError,
             },
             {
               label: "發票",
-              isError: $invoices.isError,
+              isError: invoices.isError,
             },
             {
               label: "發票配對",
-              isError: $invoiceMappings.isError,
+              isError: invoiceMappings.isError,
             },
             {
               label: "投資活動",
-              isError: $trades.isError,
+              isError: trades.isError,
             },
           ],
     ),
   );
   const activitySummaryIncomplete = $derived(activityDataStatus.hasFailure);
   const activityRetryPending = $derived(
-    $searchResults.isFetching ||
-      $bank.isFetching ||
-      $invoices.isFetching ||
-      $invoiceMappings.isFetching ||
-      $trades.isFetching,
+    searchResults.isFetching ||
+      bank.isFetching ||
+      invoices.isFetching ||
+      invoiceMappings.isFetching ||
+      trades.isFetching,
   );
   const categories = $derived(
     Object.fromEntries(
       categoryOptions.map((category) => [category.id, category.label]),
     ),
   );
-  const rateValues = $derived(rateMap($rates.data));
+  const rateValues = $derived(rateMap(rates.data));
   const bankAccounts = $derived(
     new Map((bankData?.accounts ?? []).map((account) => [account.id, account])),
   );
@@ -404,12 +429,12 @@
     matchInvoicesToTransactions(
       activityBankTransactions,
       invoiceData ?? [],
-      $invoiceMappings.data ?? [],
+      invoiceMappings.data ?? [],
     ),
   );
   const rawItems = $derived(
     searching
-      ? ($searchResults.data?.pages.flatMap((page) => page.items) ?? [])
+      ? (searchResults.data?.pages.flatMap((page) => page.items) ?? [])
       : buildActivityItems(
           activityBankTransactions,
           invoiceData ?? [],
@@ -422,8 +447,8 @@
     rawItems.find((item) => activityKey(item) === detailKey),
   );
   const detailInvoiceId = $derived(detailItem?.invoiceId ?? null);
-  const detailInvoice = createQuery(
-    toStore(() => invoiceDetailQuery(() => api, detailInvoiceId)),
+  const detailInvoice = createQuery(() =>
+    invoiceDetailQuery(() => api, detailInvoiceId),
   );
   const cashFlowMonths = recentMonthKeys(6, activityMonthAnchor);
   const months = [...cashFlowMonths].reverse();
@@ -456,10 +481,10 @@
     buildActivityCategorySlices(monthlyCalculatedItems, "expense", rateValues),
   );
   const incomeTotal = $derived(
-    incomeSlices.reduce((sum, slice) => sum + slice.amount, 0),
+    activityFlowTotalTwd(monthlyCalculatedItems, "income", rateValues),
   );
   const expenseTotal = $derived(
-    expenseSlices.reduce((sum, slice) => sum + slice.amount, 0),
+    activityFlowTotalTwd(monthlyCalculatedItems, "expense", rateValues),
   );
   const currentMonth = currentActivityMonthKey();
   const selectedMonthLabel = $derived(`${Number(selectedMonth.slice(5))} 月`);
@@ -474,18 +499,8 @@
       );
       return {
         month,
-        income: items.reduce(
-          (sum, item) =>
-            sum + Math.max(activityCashAmountTwd(item, rateValues), 0),
-          0,
-        ),
-        expense: Math.abs(
-          items.reduce(
-            (sum, item) =>
-              sum + Math.min(activityCashAmountTwd(item, rateValues), 0),
-            0,
-          ),
-        ),
+        income: activityFlowTotalTwd(items, "income", rateValues),
+        expense: activityFlowTotalTwd(items, "expense", rateValues),
       };
     }),
   );
@@ -505,7 +520,7 @@
     }),
   );
   const fillingSearchBatch = $derived(
-    searching && !invalidSearchDates && $searchResults.isFetching,
+    searching && !invalidSearchDates && searchResults.isFetching,
   );
   let searchSentinel = $state<HTMLDivElement>();
   $effect(() => {
@@ -513,16 +528,16 @@
       !searchSentinel ||
       !searching ||
       invalidSearchDates ||
-      !$searchResults.hasNextPage ||
-      $searchResults.isFetching ||
-      $searchResults.isError
+      !searchResults.hasNextPage ||
+      searchResults.isFetching ||
+      searchResults.isError
     )
       return;
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
         observer.disconnect();
-        void $searchResults.fetchNextPage();
+        void searchResults.fetchNextPage();
       },
       { rootMargin: "0px 0px 240px 0px" },
     );
@@ -543,7 +558,7 @@
       unavailableTransactionIds,
     );
   });
-  const categoryMutation = createMutation({
+  const categoryMutation = createMutation(() => ({
     mutationFn: async (payload: {
       transactionId: string;
       categoryId: string;
@@ -571,8 +586,8 @@
       qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
       pending = null;
     },
-  });
-  const calculationMutation = createMutation({
+  }));
+  const calculationMutation = createMutation(() => ({
     mutationFn: (payload: {
       transactionId: string;
       excludedFromCalculation: boolean;
@@ -588,8 +603,8 @@
       );
       qc.invalidateQueries({ queryKey: queryKeys.bank });
     },
-  });
-  const calculationUpdateMutation = createMutation({
+  }));
+  const calculationUpdateMutation = createMutation(() => ({
     mutationFn: async (payload: CalculationUpdateInput) => {
       await api.patch(
         `/api/bank/transactions/${encodeURIComponent(payload.transactionId)}/calculation`,
@@ -638,8 +653,60 @@
       qc.invalidateQueries({ queryKey: queryKeys.bank });
       qc.invalidateQueries({ queryKey: queryKeys.classificationRules });
     },
-  });
-  const mappingMutation = createMutation({
+  }));
+  const noteMutation = createMutation(() => ({
+    mutationFn: (payload: { transactionId: string; note: string }) =>
+      api.put(
+        `/api/bank/transactions/${encodeURIComponent(payload.transactionId)}/note`,
+        { note: payload.note },
+      ),
+    // 月份與搜尋快取都以 bank 開頭；等重新載入後才結束儲存，避免顯示舊備註。
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.bank }),
+  }));
+  const invoiceCalculationMutation = createMutation(() => ({
+    mutationFn: (payload: {
+      invoiceId: string;
+      excludedFromCalculation: boolean;
+    }) =>
+      api.patch(
+        `/api/invoices/${encodeURIComponent(payload.invoiceId)}/calculation`,
+        { excludedFromCalculation: payload.excludedFromCalculation },
+      ),
+    onSuccess: (_result, payload) => {
+      const excludedFromCalculation = payload.excludedFromCalculation;
+      const markInvoice = <T extends { id: string }>(invoice: T) =>
+        invoice.id === payload.invoiceId
+          ? { ...invoice, excludedFromCalculation }
+          : invoice;
+      qc.setQueriesData<InvoiceSummaryRow[]>(
+        { queryKey: queryKeys.invoices },
+        (current) =>
+          Array.isArray(current) ? current.map(markInvoice) : current,
+      );
+      // 搜尋時明細讀的是搜尋快取；先同步，避免重新載入前或失敗時再送出相同設定。
+      // 只改純發票活動，已配對的交易沿用交易自己的計算設定。
+      qc.setQueriesData<InfiniteData<ActivitySearchPage>>(
+        { queryKey: ["bank", "activity-search"] },
+        (current) =>
+          current && {
+            ...current,
+            pages: current.pages.map((page) => ({
+              ...page,
+              items: page.items.map((item) =>
+                item.source === "invoice" &&
+                item.invoiceId === payload.invoiceId
+                  ? { ...item, excludedFromCalculation }
+                  : item,
+              ),
+              invoices: page.invoices.map(markInvoice),
+            })),
+          },
+      );
+      qc.invalidateQueries({ queryKey: queryKeys.invoices });
+      qc.invalidateQueries({ queryKey: ["bank", "activity-search"] });
+    },
+  }));
+  const mappingMutation = createMutation(() => ({
     mutationFn: (payload: { invoiceId: string; transactionId: string }) =>
       api.put<InvoiceTransactionPreference>(
         `/api/activity/invoice-mappings/${encodeURIComponent(payload.invoiceId)}`,
@@ -651,8 +718,8 @@
       closeDetail();
       showMappingNotice("已完成配對，活動只顯示一筆");
     },
-  });
-  const separationMutation = createMutation({
+  }));
+  const separationMutation = createMutation(() => ({
     mutationFn: (invoiceId: string) =>
       api.delete<InvoiceTransactionPreference>(
         `/api/activity/invoice-mappings/${encodeURIComponent(invoiceId)}`,
@@ -663,7 +730,7 @@
       closeDetail();
       showMappingNotice("已解除配對，兩筆活動將保持分開");
     },
-  });
+  }));
   function openCategory(item: ActivityItem, categoryId: string) {
     if (item.transactionId && categoryId !== item.categoryId)
       pending = {
@@ -700,11 +767,11 @@
     selectedCategory = null;
   }
   function retryActivityData() {
-    if (searching && $searchResults.isError) void $searchResults.refetch();
-    if ($bank.isError) void $bank.refetch();
-    if ($invoices.isError) void $invoices.refetch();
-    if ($invoiceMappings.isError) void $invoiceMappings.refetch();
-    if ($trades.isError) void $trades.refetch();
+    if (searching && searchResults.isError) void searchResults.refetch();
+    if (bank.isError) void bank.refetch();
+    if (invoices.isError) void invoices.refetch();
+    if (invoiceMappings.isError) void invoiceMappings.refetch();
+    if (trades.isError) void trades.refetch();
   }
   function sourceLabel(item: ActivityItem) {
     const label = {
@@ -722,6 +789,8 @@
   }
   function openDetail(item: ActivityItem) {
     detailKey = activityKey(item);
+    // 明細有自己的 history entry，返回鍵與 iOS 主畫面 App 的系統右滑都會經 popstate 關閉；
+    // 不要再加自訂右滑，否則兩種手勢會同時拖動畫面。
     window.history.pushState(
       { ...window.history.state, activityDetail: detailKey },
       "",
@@ -733,6 +802,14 @@
     );
   }
   function toggleCalculation(item: ActivityItem) {
+    if (item.source === "invoice" && item.invoiceId) {
+      // 純發票沒有分類與規則可調整，直接切換是否計入。
+      invoiceCalculationMutation.mutate({
+        invoiceId: item.invoiceId,
+        excludedFromCalculation: !item.excludedFromCalculation,
+      });
+      return;
+    }
     if (!item.transactionId) return;
     if (!item.excludedFromCalculation) {
       pendingCalculation = {
@@ -744,7 +821,7 @@
       };
       return;
     }
-    $calculationMutation.mutate({
+    calculationMutation.mutate({
       transactionId: item.transactionId,
       excludedFromCalculation: false,
     });
@@ -773,8 +850,8 @@
     );
   }
   function updateMappingPreference(preference: InvoiceTransactionPreference) {
-    qc.setQueryData<InvoiceTransactionPreference[]>(
-      queryKeys.invoiceTransactionMappings,
+    qc.setQueriesData<InvoiceTransactionPreference[]>(
+      { queryKey: queryKeys.invoiceTransactionMappings },
       (current = []) => [
         preference,
         ...current.filter((row) => row.invoiceId !== preference.invoiceId),
@@ -850,7 +927,7 @@
   }
 </script>
 
-{#if !searching && ($bank.isPending || $invoices.isPending || $invoiceMappings.isPending || $trades.isPending)}
+{#if !searching && (bank.isPending || invoices.isPending || invoiceMappings.isPending || trades.isPending)}
   <EmptyState title="載入活動中" body="正在整理銀行、投資與發票資料。" />
 {:else}
   <div class="grid min-w-0 max-w-full gap-6 overflow-x-clip pt-3 md:pt-2">
@@ -911,7 +988,7 @@
     {#if missingMonthlyRates.length > 0}
       <p role="status" class="text-sm text-coral">
         缺少 {missingMonthlyRates.join("、")} 匯率，月份總額與分類圖表尚未包含這些外幣交易。
-        <button type="button" class="underline" onclick={() => $rates.refetch()}
+        <button type="button" class="underline" onclick={() => rates.refetch()}
           >重試匯率</button
         >
       </p>
@@ -970,7 +1047,7 @@
             >
               {activitySummaryIncomplete
                 ? "—"
-                : `+${formatCurrency(incomeTotal)}`}
+                : `${flowAmountSign("income", incomeTotal)}${formatCurrency(Math.abs(incomeTotal))}`}
             </p>
           </div>
           <div class="min-w-0">
@@ -980,7 +1057,7 @@
             >
               {activitySummaryIncomplete
                 ? "—"
-                : `−${formatCurrency(expenseTotal)}`}
+                : `${flowAmountSign("expense", expenseTotal)}${formatCurrency(Math.abs(expenseTotal))}`}
             </p>
           </div>
           <div class="col-span-2 min-w-0 md:col-span-1">
@@ -1007,23 +1084,27 @@
           <ActivityCategoryChart
             flow="income"
             slices={incomeSlices}
+            total={incomeTotal}
             selectedCategory={selectedCategory?.flow === "income"
               ? selectedCategory.category
               : undefined}
             flowSelected={flow === "income" && !selectedCategory}
             dataIncomplete={activitySummaryIncomplete}
-            onSelect={(category) => chooseCategory("income", category)}
+            onSelect={(category) =>
+              categorySheet.handleCategorySelect("income", category)}
             onSelectFlow={() => chooseChartFlow("income")}
           />
           <ActivityCategoryChart
             flow="expense"
             slices={expenseSlices}
+            total={expenseTotal}
             selectedCategory={selectedCategory?.flow === "expense"
               ? selectedCategory.category
               : undefined}
             flowSelected={flow === "expense" && !selectedCategory}
             dataIncomplete={activitySummaryIncomplete}
-            onSelect={(category) => chooseCategory("expense", category)}
+            onSelect={(category) =>
+              categorySheet.handleCategorySelect("expense", category)}
             onSelectFlow={() => chooseChartFlow("expense")}
           />
         </div>
@@ -1055,17 +1136,22 @@
                       style={`height:${Math.max(8, (point.income / maxCashFlow) * 100)}%`}
                     ></span><span
                       class="w-1/3 rounded-t-sm bg-coral"
-                      style={`height:${Math.max(8, (point.expense / maxCashFlow) * 100)}%`}
+                      style={`height:${point.expense < 0 ? 0 : Math.max(8, (point.expense / maxCashFlow) * 100)}%`}
                     ></span>
                   </div>
                   <span class="mt-2 w-full text-caption font-semibold"
                     >{Number(point.month.slice(5))} 月</span
                   ><span
                     class="mt-1 w-full truncate text-caption font-medium tabular-nums text-moss"
-                    >+{formatCompactTwd(point.income)}</span
+                    >{flowAmountSign("income", point.income)}{formatCompactTwd(
+                      Math.abs(point.income),
+                    )}</span
                   ><span
                     class="w-full truncate text-caption font-medium tabular-nums text-coral"
-                    >−{formatCompactTwd(point.expense)}</span
+                    >{flowAmountSign(
+                      "expense",
+                      point.expense,
+                    )}{formatCompactTwd(Math.abs(point.expense))}</span
                   >
                 </button>
               {/each}
@@ -1089,6 +1175,7 @@
     <section
       class="min-w-0 max-w-full overflow-hidden border-t border-ink/10 pt-5"
       aria-label="活動列表"
+      bind:this={activityListEl}
     >
       <header class="grid min-w-0 gap-3 pb-4">
         <div
@@ -1148,7 +1235,7 @@
             >
           </div>
         {/if}
-        {#if $calculationMutation.isError}<p
+        {#if calculationMutation.isError}<p
             class="text-sm font-medium text-coral"
           >
             無法更新計算設定，請稍後再試。
@@ -1204,20 +1291,33 @@
                           />
                         </p>
                       {/if}
-                      {#if time}<p
-                          class="mt-0.5 text-xs font-medium tabular-nums text-subtle"
+                      {#if item.note}<p
+                          class="mt-1 flex min-w-0 items-center gap-1 text-caption text-subtle"
                         >
-                          {time}
+                          <StickyNote
+                            aria-label="備註"
+                            class="size-3.5 shrink-0"
+                          /><span class="truncate"
+                            ><SearchHighlight
+                              text={item.note}
+                              query={submittedSearch}
+                            /></span
+                          >
                         </p>{/if}
-                      <p
-                        class="mt-0.5 truncate text-caption font-medium text-subtle"
-                      >
-                        {item.institutionName ?? sourceLabel(item)}
-                      </p>
-                      <p class="mt-0.5 truncate text-xs text-subtle">
-                        {[item.accountName, item.category]
-                          .filter(Boolean)
-                          .join(" · ")}
+                      {#if time || item.category}<div
+                          class="mt-1 flex items-center gap-2 text-xs font-medium tabular-nums text-subtle"
+                        >
+                          {#if time}<span class="shrink-0">{time}</span>{/if}
+                          {#if item.category}<CategoryBadge
+                              label={item.category}
+                              categoryId={item.categoryId}
+                              class="py-0 pr-2 font-medium"
+                            />{/if}
+                        </div>{/if}
+                      <p class="mt-1 truncate text-xs text-subtle">
+                        <span class="font-medium"
+                          >{item.institutionName ?? sourceLabel(item)}</span
+                        >{item.accountName ? ` · ${item.accountName}` : ""}
                       </p>
                     </div>
                     <div class="flex shrink-0 items-center gap-1.5">
@@ -1228,7 +1328,7 @@
                           <ActivityAmount
                             {item}
                             rates={rateValues}
-                            exchangeRates={$rates.data}
+                            exchangeRates={rates.data}
                           />
                         </p>
                         <p class="mt-1 text-xs text-subtle">
@@ -1319,6 +1419,19 @@
                             />
                           </p>
                         {/if}
+                        {#if item.note}<p
+                            class="mt-1 flex min-w-0 items-center gap-1 text-caption text-subtle"
+                          >
+                            <StickyNote
+                              aria-label="備註"
+                              class="size-3.5 shrink-0"
+                            /><span class="truncate"
+                              ><SearchHighlight
+                                text={item.note}
+                                query={submittedSearch}
+                              /></span
+                            >
+                          </p>{/if}
                         {#if time}<p
                             class="mt-1 text-caption font-medium tabular-nums text-subtle"
                           >
@@ -1341,7 +1454,10 @@
                             {item.accountName}
                           </p>{/if}</td
                       ><td class="px-4 py-3.5"
-                        ><Badge variant="secondary">{item.category}</Badge></td
+                        ><CategoryBadge
+                          label={item.category}
+                          categoryId={item.categoryId}
+                        /></td
                       ><td class="py-3.5 pl-4"
                         ><div class="flex items-center justify-end gap-2">
                           <div class="min-w-0 text-right">
@@ -1351,7 +1467,7 @@
                               <ActivityAmount
                                 {item}
                                 rates={rateValues}
-                                exchangeRates={$rates.data}
+                                exchangeRates={rates.data}
                               />
                             </p>
                             <p class="mt-1 text-caption text-subtle">
@@ -1367,31 +1483,47 @@
         </div>
       </div>
     </section>
-    {#if searching && $searchResults.hasNextPage && !invalidSearchDates}
+    {#if searching && searchResults.hasNextPage && !invalidSearchDates}
       <div
         bind:this={searchSentinel}
         data-testid="search-load-more"
         class="flex min-h-11 justify-center items-center"
       >
-        {#if $searchResults.isError}
+        {#if searchResults.isError}
           <Button
             variant="outline"
             class="h-11"
-            disabled={$searchResults.isFetching}
-            onclick={() => $searchResults.fetchNextPage()}>重試載入更多</Button
+            disabled={searchResults.isFetching}
+            onclick={() => searchResults.fetchNextPage()}>重試載入更多</Button
           >
         {:else}
           <p role="status" class="text-sm text-subtle">
-            {$searchResults.isFetching ? "載入中…" : "往下捲動載入更多"}
+            {searchResults.isFetching ? "載入中…" : "往下捲動載入更多"}
           </p>
         {/if}
       </div>
+    {/if}
+    {#if !searching && categorySheet.key && categorySheet.isMobileViewport}
+      <CategoryDetailSheet
+        flow={categorySheet.key.flow}
+        category={categorySheet.key.category}
+        slice={categorySheet.slice}
+        {selectedMonth}
+        monthLabel={selectedMonthLabel}
+        monthKeys={cashFlowMonths}
+        items={rawItems}
+        rates={rateValues}
+        {sourceLabel}
+        onClose={categorySheet.close}
+        onFilter={categorySheet.applyFilter}
+        onOpenDetail={openDetail}
+      />
     {/if}
     {#if detailItem}
       {@const amount = activityDisplayAmount(detailItem)}
       {@const transaction = transactionForItem(detailItem)}
       {@const invoice = invoiceForItem(detailItem)}
-      <div class="fixed inset-0 z-[60] bg-ink/40 md:flex md:justify-end">
+      <div class="fixed inset-0 z-[60] bg-inverse/40 md:flex md:justify-end">
         <button
           aria-label="關閉活動明細"
           class="absolute inset-0 hidden md:block"
@@ -1400,13 +1532,8 @@
         <div
           aria-labelledby="activity-detail-title"
           aria-modal="true"
-          class="relative flex h-full w-full flex-col overflow-hidden bg-white shadow-2xl md:max-w-[32rem]"
+          class="relative flex h-full w-full flex-col overflow-hidden bg-card shadow-2xl md:max-w-[32rem]"
           role="dialog"
-          use:swipeBack={{
-            enabled:
-              document.documentElement.classList.contains("is-standalone"),
-            onBack: closeDetail,
-          }}
         >
           <header
             class="flex shrink-0 items-center justify-between border-b border-ink/10 px-4 py-3 md:px-6"
@@ -1453,14 +1580,16 @@
                   <ActivityAmount
                     item={detailItem}
                     rates={rateValues}
-                    exchangeRates={$rates.data}
+                    exchangeRates={rates.data}
                     detail
                   />
                 </p>
               </div>
-              <Badge variant="secondary" class="mt-3"
-                >{detailItem.category}</Badge
-              >
+              <CategoryBadge
+                label={detailItem.category}
+                categoryId={detailItem.categoryId}
+                class="mt-3"
+              />
               {#if detailItem.excludedFromCalculation}<Badge
                   variant="secondary"
                   class="ml-2 mt-3">已排除計算</Badge
@@ -1473,6 +1602,20 @@
                   )}</Badge
                 >{/if}
             </section>
+
+            {#if detailItem.transactionId}
+              {@const transactionId = detailItem.transactionId}
+              {#key activityKey(detailItem)}<ActivityNoteEditor
+                  note={detailItem.note}
+                  title={detailItem.title}
+                  submitting={noteMutation.isPending &&
+                    noteMutation.variables?.transactionId === transactionId}
+                  failed={noteMutation.isError &&
+                    noteMutation.variables?.transactionId === transactionId}
+                  onSave={(note) =>
+                    noteMutation.mutateAsync({ transactionId, note })}
+                />{/key}
+            {/if}
 
             <section class="border-b border-ink/10 py-5">
               <h3 class="text-base font-semibold">來源名稱</h3>
@@ -1531,20 +1674,20 @@
 
             {#if invoice}<section class="border-b border-ink/10 py-5">
                 <h3 class="text-base font-semibold">發票細項</h3>
-                {#if $detailInvoice.isPending}<p
+                {#if detailInvoice.isPending}<p
                     class="mt-3 rounded-xl bg-paper p-4 text-sm text-subtle"
                   >
                     載入發票細項中。
-                  </p>{:else if $detailInvoice.isError}<p
+                  </p>{:else if detailInvoice.isError}<p
                     class="mt-3 rounded-xl bg-coral/10 p-4 text-sm text-coral"
                   >
                     無法載入發票細項，請稍後再試。
-                  </p>{:else if !$detailInvoice.data || $detailInvoice.data.items.length === 0}<p
+                  </p>{:else if !detailInvoice.data || detailInvoice.data.items.length === 0}<p
                     class="mt-3 rounded-xl bg-paper p-4 text-sm text-subtle"
                   >
                     此發票沒有品項明細。
                   </p>{:else}<div class="mt-2 divide-y divide-ink/10">
-                    {#each $detailInvoice.data.items as line (line.id)}<div
+                    {#each detailInvoice.data.items as line (line.id)}<div
                         class="flex items-start justify-between gap-4 py-3"
                       >
                         <div class="min-w-0">
@@ -1572,6 +1715,11 @@
                 <div class="flex items-center justify-between gap-4 py-4">
                   <div>
                     <p class="font-semibold">分類</p>
+                    {#if detailItem.classificationSource === "ai"}<p
+                        class="mt-1 text-caption text-subtle"
+                      >
+                        由 AI 自動分類，可直接修改
+                      </p>{/if}
                     {#if !detailItem.transactionId}<p
                         class="mt-1 text-caption text-subtle"
                       >
@@ -1592,27 +1740,33 @@
                       >{#each categoryOptions as category (category.id)}<option
                           value={category.id}>{category.label}</option
                         >{/each}</Select
-                    >{:else}<Badge variant="secondary"
-                      >{detailItem.category}</Badge
-                    >{/if}
+                    >{:else}<CategoryBadge
+                      label={detailItem.category}
+                      categoryId={detailItem.categoryId}
+                    />{/if}
                 </div>
 
-                {#if detailItem.transactionId}<label
+                {#if detailItem.transactionId || detailItem.source === "invoice"}<label
                     class="flex cursor-pointer items-center justify-between gap-4 py-4"
                   >
                     <span>
                       <span class="block font-semibold">排除統計計算</span>
                       <span class="mt-1 block text-caption text-subtle"
-                        >保留活動，但不計入收支</span
+                        >{detailItem.source === "invoice"
+                          ? "現金消費已在提款時計入，可排除以免重複"
+                          : "保留活動，但不計入收支"}</span
                       >
                     </span>
                     <Checkbox
                       aria-label={`${detailItem.excludedFromCalculation ? "恢復" : "排除"} ${detailItem.title} 的統計計算`}
                       checked={detailItem.excludedFromCalculation}
-                      disabled={($calculationMutation.isPending &&
-                        $calculationMutation.variables?.transactionId ===
+                      disabled={(calculationMutation.isPending &&
+                        calculationMutation.variables?.transactionId ===
                           detailItem.transactionId) ||
-                        $calculationUpdateMutation.isPending}
+                        calculationUpdateMutation.isPending ||
+                        (invoiceCalculationMutation.isPending &&
+                          invoiceCalculationMutation.variables?.invoiceId ===
+                            detailItem.invoiceId)}
                       onchange={(event: Event) =>
                         handleCalculationChange(detailItem, event)}
                     />
@@ -1647,10 +1801,10 @@
         update={pending}
         {categories}
         matchCount={countMatches(pending)}
-        submitting={$categoryMutation.isPending}
-        failed={$categoryMutation.isError}
+        submitting={categoryMutation.isPending}
+        failed={categoryMutation.isError}
         onCancel={() => (pending = null)}
-        onSubmit={(input) => $categoryMutation.mutate(input)}
+        onSubmit={(input) => categoryMutation.mutate(input)}
       />
     {/if}
     {#if pendingCalculation}
@@ -1658,19 +1812,19 @@
         bind:update={pendingCalculation}
         {categoryOptions}
         matchCount={countMatches(pendingCalculation)}
-        submitting={$calculationUpdateMutation.isPending}
-        failed={$calculationUpdateMutation.isError}
+        submitting={calculationUpdateMutation.isPending}
+        failed={calculationUpdateMutation.isError}
         onCancel={() => (pendingCalculation = null)}
-        onSubmit={(input) => $calculationUpdateMutation.mutate(input)}
+        onSubmit={(input) => calculationUpdateMutation.mutate(input)}
       />
     {/if}
     {#if mappingDialog}<div
         aria-modal="true"
-        class="fixed inset-0 z-[75] flex items-end bg-ink/45 md:items-center md:justify-center md:p-6"
+        class="fixed inset-0 z-[75] flex items-end bg-inverse/45 md:items-center md:justify-center md:p-6"
         role="dialog"
       >
         <div
-          class="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-white p-5 shadow-2xl md:max-w-xl md:rounded-2xl md:p-6"
+          class="max-h-[92vh] w-full overflow-y-auto rounded-t-2xl bg-card p-5 shadow-2xl md:max-w-xl md:rounded-2xl md:p-6"
         >
           <div
             class="mx-auto mb-4 h-1.5 w-14 rounded-full bg-ink/20 md:hidden"
@@ -1682,7 +1836,7 @@
                   ? "管理配對"
                   : mappingDialog.step === "confirm"
                     ? "確認合併這兩筆？"
-                    : "選擇同日候選交易"}
+                    : "選擇候選交易"}
               </h2>
               {#if mappingDialog.step === "candidates"}<p
                   class="mt-1 truncate text-sm text-subtle"
@@ -1739,11 +1893,11 @@
               >
               <Button
                 class="h-12 justify-start gap-3 text-coral"
-                disabled={$separationMutation.isPending}
+                disabled={separationMutation.isPending}
                 variant="outline"
                 onclick={() =>
-                  $separationMutation.mutate(mappingDialog!.invoice.id)}
-                ><Unlink2 class="size-4" />{$separationMutation.isPending
+                  separationMutation.mutate(mappingDialog!.invoice.id)}
+                ><Unlink2 class="size-4" />{separationMutation.isPending
                   ? "解除中…"
                   : "解除並保持分開"}</Button
               >
@@ -1753,15 +1907,19 @@
               {#if mappingCandidates.length === 0}<div
                   class="rounded-xl border border-dashed border-ink/15 bg-paper p-6 text-center"
                 >
-                  <p class="font-semibold">同一天沒有可配對的支出</p>
+                  <p class="font-semibold">沒有可配對的支出</p>
                   <p class="mt-1 text-caption text-subtle">
-                    只有同一天的 TWD 銀行或信用卡支出會列在這裡。
+                    只列出發票日當天，或 {MANUAL_INVOICE_MATCH_MAX_DAYS} 天內金額相同、尚未配對的
+                    TWD 銀行或信用卡支出。
                   </p>
                 </div>{:else}{#each mappingCandidates as transaction (transaction.id)}{@const difference =
                     mappingDifference(
                       mappingDialog.invoice,
                       transaction,
-                    )}<button
+                    )}{@const dayGap = invoiceTransactionDayGap(
+                    transaction,
+                    mappingDialog.invoice,
+                  )}<button
                     aria-pressed={mappingDialog.transactionId ===
                       transaction.id}
                     class={`min-h-24 rounded-xl border p-4 text-left transition ${mappingDialog.transactionId === transaction.id ? "border-steel bg-steel/10 ring-2 ring-steel/15" : "border-ink/10 hover:border-steel/40 hover:bg-paper"}`}
@@ -1787,7 +1945,7 @@
                     </span>
                     <span class="mt-3 flex flex-wrap items-center gap-2">
                       <Badge variant="secondary" class="bg-moss/10 text-moss"
-                        >同一天</Badge
+                        >{dayGap ? `晚 ${dayGap} 天` : "同一天"}</Badge
                       >
                       {#if difference > 0}<Badge
                           variant="secondary"
@@ -1798,7 +1956,7 @@
                   </button>{/each}{/if}
             </div>
             <p class="mt-4 text-caption text-subtle">
-              依同一天與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
+              依日期與金額接近排序；商家名稱可能因支付工具而不同，最後由你決定。
             </p>
             <div class="mt-5 grid grid-cols-[7rem_1fr] gap-3">
               <Button
@@ -1867,13 +2025,13 @@
                   >返回</Button
                 ><Button
                   class="h-12"
-                  disabled={$mappingMutation.isPending}
+                  disabled={mappingMutation.isPending}
                   onclick={() =>
-                    $mappingMutation.mutate({
+                    mappingMutation.mutate({
                       invoiceId: mappingDialog!.invoice.id,
                       transactionId: transaction.id,
                     })}
-                  >{$mappingMutation.isPending ? "配對中…" : "確認配對"}</Button
+                  >{mappingMutation.isPending ? "配對中…" : "確認配對"}</Button
                 >
               </div>
             {:else}<p class="mt-5 text-sm text-coral">
@@ -1881,7 +2039,7 @@
               </p>{/if}
           {/if}
 
-          {#if $mappingMutation.isError || $separationMutation.isError}<p
+          {#if mappingMutation.isError || separationMutation.isError}<p
               class="mt-4 text-sm font-medium text-coral"
             >
               無法更新配對，資料可能已變更，請重新整理後再試。
@@ -1890,7 +2048,7 @@
       </div>{/if}
     {#if mappingNotice}<div
         aria-live="polite"
-        class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-ink px-4 py-3 text-sm font-semibold text-white shadow-xl"
+        class="fixed left-1/2 top-20 z-[85] flex w-[min(22rem,calc(100vw-2rem))] -translate-x-1/2 items-center gap-3 rounded-xl bg-inverse px-4 py-3 text-sm font-semibold text-white shadow-xl"
       >
         <Check class="size-5 shrink-0 text-lime-300" />{mappingNotice}
       </div>{/if}

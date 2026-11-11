@@ -1,11 +1,17 @@
 <script lang="ts">
-  import type { CreditCardBillRow } from "@/data/bank/types";
+  import type { BankAccountRow, CreditCardBillRow } from "@/data/bank/types";
+  import {
+    groupCardAccounts,
+    groupDepositAccounts,
+  } from "@/data/bank/account-groups";
+  import type { ApiClient } from "@/shared/api/client";
   import {
     formatBankAccountName,
     formatCurrency,
     formatDate,
   } from "@/shared/format/financial";
   import type { InstitutionAssetGroup } from "../model/summary";
+  import PaymentAccountSelect from "./PaymentAccountSelect.svelte";
 
   let {
     group,
@@ -13,17 +19,59 @@
     billsPending = false,
     billsError = false,
     compact = false,
+    api,
+    accounts = [],
   }: {
     group: InstitutionAssetGroup;
     bills: CreditCardBillRow[];
     billsPending?: boolean;
     billsError?: boolean;
     compact?: boolean;
+    /** 提供時可設定信用卡與貸款的扣款帳戶。 */
+    api?: ApiClient;
+    /** 所有帳戶，作為扣款帳戶的選項。 */
+    accounts?: BankAccountRow[];
   } = $props();
 
   const cardsById = $derived(
     new Map(group.cards.map((card) => [card.id, card])),
   );
+  const depositGroups = $derived(groupDepositAccounts(group.accounts));
+  const cardGroups = $derived(groupCardAccounts(group.cards));
+
+  /** 多幣別信用卡帳戶去掉名稱結尾的幣別，例如「永豐信用卡（JPY）」。 */
+  function cardGroupName(members: BankAccountRow[]) {
+    const first = members[0]!;
+    const name = first.accountName ?? formatBankAccountName(first);
+    return members.length > 1
+      ? name.replace(new RegExp(`\\s*[（(]${first.currency}[)）]$`, "i"), "")
+      : name;
+  }
+
+  function cardAmount(card: BankAccountRow) {
+    return card.balance == null
+      ? "剩餘應繳金額未取得"
+      : formatCurrency(card.balance, card.currency);
+  }
+
+  /** 單一幣別顯示幣別；同一帳號的多幣別改標示帳戶類型，幣別逐列列在下方。 */
+  function depositGroupDetail(members: BankAccountRow[]) {
+    const currencies = members.map((account) => account.currency);
+    const label =
+      members.length === 1
+        ? currencies[0]
+        : currencies.includes("TWD")
+          ? "多幣別帳戶"
+          : "外幣帳戶";
+    const asOfAt = members
+      .map((account) => account.asOfAt)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1);
+    return asOfAt
+      ? `${label} · 更新 ${formatDate(asOfAt)}`
+      : `${label} · 尚未取得更新時間`;
+  }
   const institutionBills = $derived(
     bills
       .filter((bill) => cardsById.has(bill.accountId))
@@ -35,10 +83,51 @@
     return card?.accountName ?? card?.institutionName ?? "信用卡帳戶";
   }
 
-  function paymentStatusLabel(isPaid?: number) {
-    if (isPaid === 1) return "已繳";
-    if (isPaid === 0) return "待繳";
+  function cardPaymentLabel(card: BankAccountRow) {
+    if (card.balance != null && card.balance > 0) return "溢繳餘額，無需繳款";
+    const latestBill = institutionBills.find(
+      (bill) => bill.accountId === card.id,
+    );
+    if (latestBill?.isPaid === 1) {
+      return latestBill.paymentDueDate
+        ? `最近帳單已繳 · 期限 ${formatDate(latestBill.paymentDueDate)}`
+        : "最近帳單已繳";
+    }
+    const dueDate = card.paymentDueDate ?? latestBill?.paymentDueDate;
+    if (latestBill?.isPaid === 0) {
+      return dueDate ? `帳單待繳 · 期限 ${formatDate(dueDate)}` : "帳單待繳";
+    }
+    if (dueDate) return `繳款期限 ${formatDate(dueDate)}`;
+    return card.balance == null ? "繳款期限待同步" : "繳款期限尚未提供";
+  }
+
+  function paymentStatusLabel(bill: CreditCardBillRow) {
+    if (bill.isPaid === 1)
+      return bill.statementAmount != null && bill.statementAmount <= 0
+        ? "無需繳款"
+        : "已繳";
+    if (bill.isPaid === 0) return "待繳";
     return "狀態未提供";
+  }
+
+  function loanPaymentLabel(loan: BankAccountRow) {
+    const details = [
+      loan.loanInterestRate != null ? `利率 ${loan.loanInterestRate}%` : null,
+      loan.loanPaymentAmount != null
+        ? `本期應繳 ${formatCurrency(loan.loanPaymentAmount, loan.currency)}`
+        : null,
+      loan.loanPaymentStatus === "collection_incomplete"
+        ? loan.paymentDueDate
+          ? `扣款未完成 · 期限 ${formatDate(loan.paymentDueDate)}`
+          : "扣款未完成"
+        : loan.paymentDueDate
+          ? `期限 ${formatDate(loan.paymentDueDate)}`
+          : null,
+      loan.loanInstallmentsPaid != null && loan.loanInstallmentsTotal != null
+        ? `已繳 ${loan.loanInstallmentsPaid} / 共 ${loan.loanInstallmentsTotal} 期`
+        : null,
+    ].filter((value): value is string => value !== null);
+    return details.join(" · ") || "貸款明細尚未提供";
   }
 </script>
 
@@ -53,7 +142,7 @@
         帳戶與信用卡依各自資料來源顯示
       </p>
     </header>
-    <div class="grid grid-cols-2 gap-6 border-b border-ink/10 px-5 py-4">
+    <div class="grid grid-cols-3 gap-4 border-b border-ink/10 px-5 py-4">
       <div>
         <p class="text-caption text-subtle">銀行資產</p>
         <p class="mt-2 text-lg font-medium tabular-nums text-steel">
@@ -61,7 +150,19 @@
         </p>
       </div>
       <div>
-        <p class="text-caption text-subtle">信用卡負債</p>
+        <p class="text-caption text-subtle">貸款負債</p>
+        <p class="mt-2 text-lg font-medium tabular-nums text-coral">
+          {group.hasUnknownLoanBalance
+            ? "資料不完整"
+            : group.loans.length
+              ? formatCurrency(group.loanDebtTotalTwd)
+              : "—"}
+        </p>
+      </div>
+      <div>
+        <p class="text-caption text-subtle">
+          {group.debtTotalTwd < 0 ? "信用卡溢繳餘額" : "信用卡負債"}
+        </p>
         <p class="mt-2 text-lg font-medium tabular-nums text-coral">
           {group.hasUnknownCardBalance
             ? "資料不完整"
@@ -83,16 +184,19 @@
         銀行帳戶
       </h3>
       <span class="text-caption text-subtle">
-        {group.accounts.length} 個帳戶
+        {group.depositAccountCount} 個帳戶
       </span>
     </div>
     {#if group.accounts.length === 0}
       <p class="py-3 text-sm text-subtle">此機構沒有銀行帳戶。</p>
     {:else}
       <div class="mt-2 divide-y divide-border">
-        {#each group.accounts as account (account.id)}
+        {#each depositGroups as members (members[0]!.id)}
+          {@const account = members[0]!}
           <div
-            class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3"
+            class={members.length === 1
+              ? "grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3"
+              : "py-3"}
           >
             <div class="min-w-0">
               <p class="break-words text-sm font-semibold">
@@ -109,13 +213,72 @@
                 </p>
               {/if}
               <p class="mt-1 text-caption text-subtle">
-                {account.currency}{account.asOfAt
-                  ? ` · 更新 ${formatDate(account.asOfAt)}`
-                  : " · 尚未取得更新時間"}
+                {depositGroupDetail(members)}
               </p>
             </div>
-            <p class="text-right text-sm font-medium tabular-nums text-steel">
-              {formatCurrency(account.balance ?? 0, account.currency)}
+            {#if members.length === 1}
+              <p class="text-right text-sm font-medium tabular-nums text-steel">
+                {formatCurrency(account.balance ?? 0, account.currency)}
+              </p>
+            {:else}
+              <dl class="mt-2 grid gap-1.5 border-l border-ink/10 pl-3">
+                {#each members as member (member.id)}
+                  <div class="flex items-baseline justify-between gap-3">
+                    <dt class="text-caption text-subtle">{member.currency}</dt>
+                    <dd
+                      class={`text-right text-sm font-medium tabular-nums ${member.balance ? "text-steel" : "text-subtle"}`}
+                    >
+                      {formatCurrency(member.balance ?? 0, member.currency)}
+                    </dd>
+                  </div>
+                {/each}
+              </dl>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <section class={compact ? "" : "border-b border-ink/10 px-5 py-4"}>
+    <div class="flex items-center justify-between gap-3">
+      <h3
+        class={compact
+          ? "text-caption font-medium text-subtle"
+          : "text-sm font-semibold"}
+      >
+        貸款帳戶
+      </h3>
+      <span class="text-caption text-subtle">{group.loans.length} 筆貸款</span>
+    </div>
+    {#if group.loans.length === 0}
+      <p class="py-3 text-sm text-subtle">此機構沒有貸款。</p>
+    {:else}
+      <div class="mt-2 divide-y divide-border">
+        {#each group.loans as loan (loan.id)}
+          <div
+            class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3"
+          >
+            <div class="min-w-0">
+              <p class="break-words text-sm font-semibold">
+                {loan.accountName ?? "貸款帳戶"}
+              </p>
+              <p class="mt-1 text-caption text-subtle">
+                {loanPaymentLabel(loan)}
+              </p>
+              <p class="mt-1 text-caption text-subtle">
+                {loan.currency}{loan.asOfAt
+                  ? ` · 更新 ${formatDate(loan.asOfAt)}`
+                  : " · 尚未取得更新時間"}
+              </p>
+              {#if api}
+                <PaymentAccountSelect {api} account={loan} {accounts} />
+              {/if}
+            </div>
+            <p class="text-right text-sm font-medium tabular-nums text-coral">
+              {loan.balance == null
+                ? "剩餘貸款餘額未取得"
+                : formatCurrency(Math.abs(loan.balance), loan.currency)}
             </p>
           </div>
         {/each}
@@ -133,35 +296,64 @@
         信用卡帳戶
       </h3>
       <span class="text-caption text-subtle">
-        {group.cards.length} 張卡片
+        {group.cardAccountCount} 個帳戶
       </span>
     </div>
     {#if group.cards.length === 0}
       <p class="py-3 text-sm text-subtle">此機構沒有信用卡。</p>
     {:else}
       <div class="mt-2 divide-y divide-border">
-        {#each group.cards as card (card.id)}
-          <div
-            class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3"
-          >
-            <div class="min-w-0">
-              <p class="break-words text-sm font-semibold">
-                {card.accountName ?? formatBankAccountName(card)}
-              </p>
-              <p class="mt-1 text-caption text-subtle">
-                {card.paymentDueDate
-                  ? `繳款期限 ${formatDate(card.paymentDueDate)}`
-                  : card.balance == null
-                    ? "繳款期限待同步"
-                    : "繳款期限尚未提供"}
+        {#each cardGroups as members (members[0]!.id)}
+          {@const card = members[0]!}
+          {#if members.length === 1}
+            <div
+              class="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 py-3"
+            >
+              <div class="min-w-0">
+                <p class="break-words text-sm font-semibold">
+                  {cardGroupName(members)}
+                </p>
+                <p class="mt-1 text-caption text-subtle">
+                  {cardPaymentLabel(card)}
+                </p>
+                {#if api}
+                  <PaymentAccountSelect {api} account={card} {accounts} />
+                {/if}
+              </div>
+              <p class="text-right text-sm font-medium tabular-nums text-coral">
+                {cardAmount(card)}
               </p>
             </div>
-            <p class="text-right text-sm font-medium tabular-nums text-coral">
-              {card.balance == null
-                ? "金額尚未取得"
-                : formatCurrency(-Math.abs(card.balance), card.currency)}
-            </p>
-          </div>
+          {:else}
+            <!-- 同一信用卡帳戶的各幣別帳單：卡片資訊共用，繳款狀態與扣款帳戶依幣別分列。 -->
+            <div class="py-3">
+              <p class="break-words text-sm font-semibold">
+                {cardGroupName(members)}
+              </p>
+              <div class="mt-2 grid gap-3 border-l border-ink/10 pl-3">
+                {#each members as member (member.id)}
+                  <div class="min-w-0">
+                    <div class="flex items-baseline justify-between gap-3">
+                      <span class="text-caption text-subtle"
+                        >{member.currency}</span
+                      >
+                      <span
+                        class="text-right text-sm font-medium tabular-nums text-coral"
+                      >
+                        {cardAmount(member)}
+                      </span>
+                    </div>
+                    <p class="mt-1 text-caption text-subtle">
+                      {cardPaymentLabel(member)}
+                    </p>
+                    {#if api}
+                      <PaymentAccountSelect {api} account={member} {accounts} />
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -198,7 +390,7 @@
                 <p class="mt-1 text-caption text-subtle">
                   {bill.billingPeriod} · {bill.paymentDueDate
                     ? `期限 ${formatDate(bill.paymentDueDate)}`
-                    : "期限未提供"} · {paymentStatusLabel(bill.isPaid)}
+                    : "期限未提供"} · {paymentStatusLabel(bill)}
                 </p>
               </div>
               <p class="text-sm font-medium tabular-nums">

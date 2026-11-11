@@ -7,6 +7,30 @@ assets = { directory = "../web/dist", binding = "ASSETS" }
 browser = { binding = "BROWSER" }
 ai = { binding = "AI", remote = true }
 
+[[durable_objects.bindings]]
+name = "MEGABANK_EGRESS"
+class_name = "MegabankEgress"
+
+[[durable_objects.bindings]]
+name = "FUBON_EGRESS"
+class_name = "FubonEgress"
+
+[[durable_objects.bindings]]
+name = "CRYPTO_BROWSER_EGRESS"
+class_name = "CryptoBrowserEgress"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MegabankEgress"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["FubonEgress"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CryptoBrowserEgress"]
+
 [[queues.producers]]
 binding = "SYNC_QUEUE"
 queue = "taiwan-fin-hub-sync"
@@ -22,4 +46,4 @@ binding = "DB"
 database_name = "taiwan-fin-hub"
 database_id = "<YOUR_D1_DATABASE_ID>"
 remote = true
-migrations_dir = "../../packages/db/migrations"
+migrations_dir = "migrations"

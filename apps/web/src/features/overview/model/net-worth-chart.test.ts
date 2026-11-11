@@ -1,177 +1,65 @@
 import { describe, expect, it } from "vitest";
 import {
   buildNetWorthChartData,
-  getNetWorthComparison,
-  getAvailableNetWorthAssets,
+  restoreIncludedNetWorthAssets,
 } from "./net-worth-chart";
-import type { NetWorthHistoryRow } from "@/data/assets/types";
 
-const rows: NetWorthHistoryRow[] = [
-  { date: "2026-01-01", netWorth: 100, assetType: "stock", source: "tdcc" },
-  { date: "2026-01-02", netWorth: 40, assetType: "fund", source: "tdcc" },
-  { date: "2026-01-02", netWorth: 500, assetType: "deposit", source: "bank" },
-  { date: "2026-01-03", netWorth: 110, assetType: "stock", source: "tdcc" },
-  {
-    date: "2026-01-03",
-    netWorth: 200,
-    assetType: "manual:home",
-    source: "manual",
-  },
-  {
-    date: "2026-01-03",
-    netWorth: 50,
-    assetType: "manual:policy",
-    source: "manual",
-  },
-];
-
-describe("net worth chart data", () => {
-  it("aggregates selected asset types into one point per date", () => {
+describe("淨資產走勢的加密貨幣系列", () => {
+  it("Binance 與 MAX 各自沿用最新值後加總，並計入淨資產", () => {
+    const rows = [
+      {
+        date: "2026-10-21",
+        netWorth: 1000,
+        assetType: "deposit",
+        source: "bank",
+      },
+      {
+        date: "2026-10-21",
+        netWorth: 300,
+        assetType: "crypto",
+        source: "binance",
+      },
+      { date: "2026-10-22", netWorth: 200, assetType: "crypto", source: "max" },
+      {
+        date: "2026-10-23",
+        netWorth: 500,
+        assetType: "crypto",
+        source: "binance",
+      },
+    ];
     const points = buildNetWorthChartData(
       rows,
-      ["stock", "fund", "deposit"],
+      ["crypto", "deposit"],
       "ALL",
+      new Date("2026-10-23T12:00:00+08:00"),
     );
-
-    expect(points).toEqual([
-      {
-        date: "2026-01-01",
-        stock: 100,
-        fund: undefined,
-        deposit: undefined,
-        manual: undefined,
-        selectedTotal: 100,
-      },
-      {
-        date: "2026-01-02",
-        stock: 100,
-        fund: 40,
-        deposit: 500,
-        manual: undefined,
-        selectedTotal: 640,
-      },
-      {
-        date: "2026-01-03",
-        stock: 110,
-        fund: 40,
-        deposit: 500,
-        manual: 250,
-        selectedTotal: 650,
-      },
-    ]);
-  });
-
-  it("starts each category at its own first valuation date", () => {
-    const points = buildNetWorthChartData(rows, ["stock", "manual"], "ALL");
-
+    // 10/22：binance 沿用 300 + max 200 = 500；10/23：binance 500 + max 沿用 200 = 700
     expect(
-      points.map(({ date, stock, manual, selectedTotal }) => ({
+      points.map(({ date, crypto, selectedTotal }) => ({
         date,
-        stock,
-        manual,
+        crypto,
         selectedTotal,
       })),
     ).toEqual([
-      {
-        date: "2026-01-01",
-        stock: 100,
-        manual: undefined,
-        selectedTotal: 100,
-      },
-      {
-        date: "2026-01-03",
-        stock: 110,
-        manual: 250,
-        selectedTotal: 360,
-      },
+      { date: "2026-10-21", crypto: 300, selectedTotal: 1300 },
+      { date: "2026-10-22", crypto: 500, selectedTotal: 1500 },
+      { date: "2026-10-23", crypto: 700, selectedTotal: 1700 },
     ]);
   });
 
-  it("aggregates independent manual assets and includes them only when selected", () => {
-    const points = buildNetWorthChartData(rows, ["manual"], "ALL");
-
-    expect(points).toEqual([
-      {
-        date: "2026-01-03",
-        stock: 110,
-        fund: 40,
-        deposit: 500,
-        manual: 250,
-        selectedTotal: 250,
-      },
-    ]);
-  });
-
-  it("reports the asset types that have history", () => {
-    expect([...getAvailableNetWorthAssets(rows)]).toEqual([
+  it("舊版偏好自動補上新的預設類別，看過後取消的類別維持取消", () => {
+    expect(restoreIncludedNetWorthAssets(["stock", "deposit"], null)).toEqual([
       "stock",
-      "fund",
       "deposit",
-      "manual",
+      "crypto",
     ]);
-  });
-
-  it("filters points outside the selected timeframe", () => {
-    const points = buildNetWorthChartData(
-      rows,
-      ["stock"],
-      "1M",
-      new Date("2026-02-02T00:00:00Z"),
-    );
-
-    expect(points.map((point) => point.date)).toEqual(["2026-01-03"]);
-    expect(points[0]?.stock).toBe(110);
-  });
-
-  it("compares with the latest snapshot on or before the target date", () => {
-    const points = [
-      { date: "2026-01-01", selectedTotal: 100 },
-      { date: "2026-01-03", selectedTotal: 125 },
-      { date: "2026-01-08", selectedTotal: 150 },
-      { date: "2026-01-10", selectedTotal: 140 },
-    ];
-    expect(getNetWorthComparison(points, "week")).toEqual({
-      currentDate: "2026-01-10",
-      currentValue: 140,
-      targetDate: "2026-01-03",
-      previousDate: "2026-01-03",
-      previousValue: 125,
-      changeValue: 15,
-      changePercent: 12,
-    });
-  });
-
-  it("returns no comparison when the history has no target snapshot", () => {
     expect(
-      getNetWorthComparison(
-        [{ date: "2026-01-10", selectedTotal: 140 }],
-        "day",
+      restoreIncludedNetWorthAssets(
+        ["stock", "deposit"],
+        ["stock", "fund", "crypto", "deposit", "manual"],
       ),
-    ).toBeNull();
-  });
-
-  it("uses the same day in the previous calendar month and clamps month end", () => {
-    const points = [
-      { date: "2026-01-31", selectedTotal: 90 },
-      { date: "2026-02-28", selectedTotal: 100 },
-      { date: "2026-03-31", selectedTotal: 120 },
-    ];
-    expect(getNetWorthComparison(points, "month")).toMatchObject({
-      targetDate: "2026-02-28",
-      previousDate: "2026-02-28",
-      changeValue: 20,
-    });
-  });
-
-  it("leaves the percentage unavailable when the baseline is zero", () => {
-    expect(
-      getNetWorthComparison(
-        [
-          { date: "2026-01-01", selectedTotal: 0 },
-          { date: "2026-01-02", selectedTotal: 30 },
-        ],
-        "day",
-      )?.changePercent,
-    ).toBeNull();
+    ).toEqual(["stock", "deposit"]);
+    expect(restoreIncludedNetWorthAssets(["bogus"], null)).toBeNull();
+    expect(restoreIncludedNetWorthAssets("x", null)).toBeNull();
   });
 });

@@ -2,25 +2,28 @@
 
 > 此文件由 `npm run db:schema:docs` 自動產生，請勿直接編輯。
 >
-> Schema 來源是套用 `packages/db/migrations/*.sql` 後的隔離 local D1；不包含任何正式環境資料。
+> Schema 來源是套用 `apps/worker/migrations/*.sql` 後的隔離 local D1；不包含任何正式環境資料。
 > Wrangler 管理的 `d1_migrations` metadata table 刻意省略。
-> Table 與欄位的業務語意來自 `packages/db/schema-metadata.json`。
+> Table 與欄位的業務語意來自 `apps/worker/schema-metadata.json`。
 
 ## 目錄
 
-- Tables：31
-- Explicit indexes：44
+- Tables：35
+- Explicit indexes：48
 - Other objects：0
-- Migrations：45
+- Migrations：72
 
 ## Tables
 
 | Table | 用途 | Columns | Foreign keys | Indexes |
 | --- | --- | ---: | ---: | ---: |
-| [`bank_accounts`](#bank_accounts) | 各銀行與信用卡連接器同步回來的帳戶主檔；同一個實體帳戶可能同時存在多個來源記錄。 | 17 | 1 | 1 |
-| [`bank_balance_snapshots`](#bank_balance_snapshots) | 帳戶在特定時間點的餘額快照，供資產總值與歷史圖表計算。 | 15 | 1 | 2 |
-| [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易計算方式的個別偏好。 | 4 | 1 | 1 |
-| [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 17 | 3 | 7 |
+| [`ai_classification_settings`](#ai_classification_settings) | AI 自動分類的單列設定、掃描進度與每日呼叫用量。 | 18 | 0 | 0 |
+| [`ai_classifications`](#ai_classifications) | AI 對單筆銀行交易的分類判斷結果。 | 7 | 1 | 1 |
+| [`bank_account_payment_accounts`](#bank_account_payment_accounts) | 使用者手動指定的信用卡或貸款扣款帳戶，優先於銀行提供的自動扣繳帳戶。 | 4 | 0 | 0 |
+| [`bank_accounts`](#bank_accounts) | 各銀行與信用卡連接器同步回來的帳戶主檔；同一個實體帳戶可能同時存在多個來源記錄。 | 23 | 1 | 1 |
+| [`bank_balance_snapshots`](#bank_balance_snapshots) | 帳戶在特定時間點的餘額快照，供資產總值與歷史圖表計算。 | 19 | 1 | 2 |
+| [`bank_transaction_preferences`](#bank_transaction_preferences) | 使用者對銀行交易的個別偏好：是否排除計算，以及交易備註。 | 5 | 1 | 1 |
+| [`bank_transactions`](#bank_transactions) | 銀行帳戶、信用卡與其他存款型連接器同步回來的交易明細。 | 19 | 3 | 7 |
 | [`classification_categories`](#classification_categories) | 交易與發票使用的分類字典，包含系統預設分類與使用者分類。 | 6 | 0 | 1 |
 | [`classification_overrides`](#classification_overrides) | 使用者對單筆目標資料指定的分類覆寫。 | 6 | 1 | 1 |
 | [`classification_rules`](#classification_rules) | 以文字條件自動判斷交易或其他資料分類的規則。 | 14 | 1 | 2 |
@@ -29,25 +32,164 @@
 | [`einvoice_sync_run_items`](#einvoice_sync_run_items) | 電子發票持久化同步中，每張發票的明細擷取工作與待寫入資料。 | 17 | 1 | 1 |
 | [`einvoice_sync_runs`](#einvoice_sync_runs) | 電子發票跨 Queue invocation 執行的持久化同步記錄。 | 21 | 2 | 2 |
 | [`exchange_rates`](#exchange_rates) | 將外幣換算為新台幣時使用的最新匯率。 | 3 | 0 | 0 |
-| [`investment_positions`](#investment_positions) | 投資帳戶在特定日期的持倉與資產市值快照。 | 14 | 0 | 4 |
-| [`investment_transactions`](#investment_transactions) | 投資帳戶的買賣、配息或其他證券交易明細。 | 22 | 0 | 3 |
+| [`investment_positions`](#investment_positions) | 投資帳戶在特定日期的持倉、成本、損益與資產市值快照。 | 19 | 0 | 5 |
+| [`investment_transactions`](#investment_transactions) | 投資帳戶的買賣、配息或其他證券交易明細。 | 23 | 0 | 3 |
 | [`invoice_line_items`](#invoice_line_items) | 電子發票底下的商品或服務明細。 | 13 | 1 | 2 |
 | [`invoice_transaction_preferences`](#invoice_transaction_preferences) | 使用者對電子發票與銀行交易是否關聯的決策。 | 5 | 2 | 2 |
-| [`invoices`](#invoices) | 電子發票的抬頭與總額主檔。 | 10 | 0 | 2 |
+| [`invoices`](#invoices) | 電子發票的抬頭與總額主檔。 | 11 | 0 | 2 |
 | [`manual_assets`](#manual_assets) | 使用者手動登錄、無法由銀行或投資連接器同步的資產。 | 6 | 0 | 0 |
+| [`manual_sync_runs`](#manual_sync_runs) | 使用者按下同步後交由 Queue consumer 執行的背景手動同步，讓前端離開或重新整理不影響同步。 | 11 | 0 | 2 |
 | [`net_worth_history`](#net_worth_history) | 按日期保存的淨資產或資產類別歷史數值，用於圖表與歷史查詢。 | 6 | 0 | 2 |
-| [`notification_preferences`](#notification_preferences) | 此單一部署的同步推播偏好設定。 | 5 | 0 | 0 |
+| [`notification_preferences`](#notification_preferences) | 此單一部署的同步推播偏好設定。 | 6 | 0 | 0 |
 | [`push_subscriptions`](#push_subscriptions) | 瀏覽器 Web Push 裝置訂閱資料。 | 6 | 0 | 0 |
 | [`scheduled_sync_batch_results`](#scheduled_sync_batch_results) | 預設排程同步批次中各工作的完成結果。 | 9 | 1 | 0 |
-| [`scheduled_sync_batches`](#scheduled_sync_batches) | 追蹤預設排程中需彙總推播的一輪同步工作。 | 12 | 0 | 2 |
+| [`scheduled_sync_batches`](#scheduled_sync_batches) | 各排程同步批次的狀態與同步前後資產、信用卡及貸款負債快照。 | 14 | 0 | 2 |
 | [`sync_activity_changes`](#sync_activity_changes) | 與金融資料 promotion 同一 transaction 保存的新增紀錄與入帳事件。 | 5 | 1 | 0 |
 | [`sync_activity_details`](#sync_activity_details) | 報告完成時沿用活動配對規則產生的活動展示快照。 | 3 | 1 | 0 |
 | [`sync_activity_runs`](#sync_activity_runs) | 同步執行與排程報告的明確關聯，涵蓋原始同步及成功的手動補救。 | 7 | 1 | 1 |
-| [`sync_jobs`](#sync_jobs) | 每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。 | 19 | 0 | 1 |
-| [`sync_schedule_settings`](#sync_schedule_settings) | 所有使用 inherit 模式之同步工作的全域預設排程。 | 6 | 0 | 0 |
+| [`sync_jobs`](#sync_jobs) | 每個連接器與同步範圍的排程、鎖定狀態與最近執行結果。 | 22 | 0 | 1 |
+| [`sync_schedule_settings`](#sync_schedule_settings) | 所有使用 inherit 模式之同步工作的全域預設排程。 | 7 | 0 | 0 |
 | [`sync_write_staging`](#sync_write_staging) | 同步流程寫入正式資料表前的暫存資料。 | 5 | 0 | 1 |
 | [`tdcc_sync_run_items`](#tdcc_sync_run_items) | 集保持久化同步中，依帳戶、任務與分頁拆分的工作及取得結果。 | 18 | 1 | 2 |
 | [`tdcc_sync_runs`](#tdcc_sync_runs) | 集保 e 存摺跨 Queue invocation 執行的持久化同步記錄與接續狀態。 | 25 | 2 | 2 |
+
+### `ai_classification_settings`
+
+> 用途：AI 自動分類的單列設定、掃描進度與每日呼叫用量。
+> 注意：id 固定為 default。scan_mode 不為 NULL 時表示有進行中的掃描，由 Queue 逐月處理並由 Cron 恢復。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `id` | 固定為 default 的單列識別碼。 | TEXT | NO | — | 1 | — |
+| 2 | `enabled` | 是否於同步後自動分類規則無法判斷的交易；0 表示停用，預設停用。 | INTEGER | NO | 0 | — | — |
+| 3 | `enabled_at` | 最近一次啟用的時間；近期掃描只處理此時間之後寫入的交易，啟用前的紀錄由使用者回補時處理。 | TEXT | YES | — | — | — |
+| 4 | `scan_mode` | 進行中的掃描類型：recent 為同步後的近期掃描，backfill 為使用者啟動的過往紀錄回補；NULL 表示沒有進行中的掃描。 | TEXT | YES | — | — | — |
+| 5 | `scan_id` | 進行中掃描的識別碼；開始近期掃描或回補時產生，停用或清除結果時清空。掃描只在識別碼仍相符時寫入結果與進度。 | TEXT | YES | — | — | — |
+| 6 | `scan_month` | 掃描目前處理的月份（YYYY-MM），由新到舊逐月處理。 | TEXT | YES | — | — | — |
+| 7 | `scan_stop_month` | 掃描處理到的最舊月份（YYYY-MM，含）。 | TEXT | YES | — | — | — |
+| 8 | `scan_watermark` | 近期掃描開始時擷取的交易與發票資料浮水印。 | TEXT | YES | — | — | — |
+| 9 | `scanned_watermark` | 最近一次完成掃描時的資料浮水印；與目前浮水印不同時，Cron 會啟動近期掃描。 | TEXT | YES | — | — | — |
+| 10 | `backfill_status` | 過往紀錄回補狀態：idle、running 或 completed。 | TEXT | NO | 'idle' | — | — |
+| 11 | `backfill_classified_count` | 本次回補由 AI 分類的交易數。 | INTEGER | NO | 0 | — | — |
+| 12 | `backfill_undetermined_count` | 本次回補 AI 無法判斷的交易數。 | INTEGER | NO | 0 | — | — |
+| 13 | `backfill_started_at` | 本次回補開始的時間。 | TEXT | YES | — | — | — |
+| 14 | `backfill_completed_at` | 本次回補完成的時間。 | TEXT | YES | — | — | — |
+| 15 | `quota_day` | quota_used 計算的 UTC 日期（YYYY-MM-DD），與 Workers AI 每日免費額度的重置日一致。 | TEXT | YES | — | — | — |
+| 16 | `quota_used` | quota_day 當日已發出的 AI 分類呼叫次數。 | INTEGER | NO | 0 | — | — |
+| 17 | `paused_until` | 因每日呼叫上限或 Workers AI 免費額度用完而暫停到的時間；NULL 表示未暫停。 | TEXT | YES | — | — | — |
+| 18 | `updated_at` | 設定或掃描進度最後更新的時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE ai_classification_settings (
+  id TEXT NOT NULL PRIMARY KEY CHECK (id = 'default'),
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  enabled_at TEXT,
+  scan_mode TEXT CHECK (scan_mode IS NULL OR scan_mode IN ('recent', 'backfill')),
+  scan_id TEXT,
+  scan_month TEXT,
+  scan_stop_month TEXT,
+  scan_watermark TEXT,
+  scanned_watermark TEXT,
+  backfill_status TEXT NOT NULL DEFAULT 'idle'
+    CHECK (backfill_status IN ('idle', 'running', 'completed')),
+  backfill_classified_count INTEGER NOT NULL DEFAULT 0,
+  backfill_undetermined_count INTEGER NOT NULL DEFAULT 0,
+  backfill_started_at TEXT,
+  backfill_completed_at TEXT,
+  quota_day TEXT,
+  quota_used INTEGER NOT NULL DEFAULT 0,
+  paused_until TEXT,
+  updated_at TEXT NOT NULL
+)
+```
+
+### `ai_classifications`
+
+> 用途：AI 對單筆銀行交易的分類判斷結果。
+> 注意：只套用於分類覆寫、規則、自動轉帳、沖銷與退費都無法判斷的交易。transaction_id 與 classification_overrides 相同，不設外鍵參照 bank_transactions。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `transaction_id` | 被分類的 bank_transactions 識別碼。 | TEXT | NO | — | 1 | — |
+| 2 | `category_id` | AI 判斷的 classification_categories 識別碼；最高機率低於門檻時為 NULL，表示無法判斷。 | TEXT | YES | — | — | — |
+| 3 | `probability` | AI 對最高機率分類回傳的機率。 | REAL | NO | — | — | — |
+| 4 | `input_hash` | 判斷時送出的交易摘要與配對發票內容的雜湊；內容改變時重新判斷。 | TEXT | NO | — | — | — |
+| 5 | `model` | 執行判斷的 Workers AI 模型。 | TEXT | NO | — | — | — |
+| 6 | `created_at` | 首次判斷的時間。 | TEXT | NO | — | — | — |
+| 7 | `updated_at` | 最近一次判斷的時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+| 欄位 | 參照表 | 參照欄位 | ON UPDATE | ON DELETE |
+| --- | --- | --- | --- | --- |
+| `category_id` | `classification_categories` | `id` | NO ACTION | NO ACTION |
+
+#### Indexes
+
+| Index | Unique | Partial | 欄位 | 定義 |
+| --- | :---: | :---: | --- | --- |
+| `idx_ai_classifications_category` | 否 | 否 | `category_id` | `CREATE INDEX idx_ai_classifications_category<br>  ON ai_classifications (category_id)` |
+
+#### DDL
+
+```sql
+CREATE TABLE ai_classifications (
+  transaction_id TEXT NOT NULL PRIMARY KEY,
+  category_id TEXT REFERENCES classification_categories (id),
+  probability REAL NOT NULL,
+  input_hash TEXT NOT NULL,
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)
+```
+
+### `bank_account_payment_accounts`
+
+> 用途：使用者手動指定的信用卡或貸款扣款帳戶，優先於銀行提供的自動扣繳帳戶。
+> 注意：兩個帳戶 ID 都不設 FK：帳戶被移除、合併或不再符合條件時視為未設定，改用銀行資料；不以 CASCADE 刪除使用者設定。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `account_id` | 信用卡或貸款帳戶的 bank_accounts.id。 | TEXT | NO | — | 1 | — |
+| 2 | `payment_account_id` | 指定的扣款存款帳戶 bank_accounts.id；NULL 表示使用者明確選擇不指定。 | TEXT | YES | — | — | — |
+| 3 | `created_at` | 首次手動設定的時間。 | TEXT | NO | — | — | — |
+| 4 | `updated_at` | 手動設定最後更新的時間。 | TEXT | NO | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+—
+
+#### DDL
+
+```sql
+CREATE TABLE bank_account_payment_accounts (
+  account_id TEXT NOT NULL PRIMARY KEY,
+  payment_account_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)
+```
 
 ### `bank_accounts`
 
@@ -75,6 +217,12 @@
 | 15 | `opened_date` | 銀行提供的定存起息日；來源未提供時為 NULL。 | TEXT | YES | — | — | — |
 | 16 | `maturity_date` | 銀行提供的定存到期日；不作為自動結清的判定條件。 | TEXT | YES | — | — | — |
 | 17 | `inactive_at` | 同步確認來源不再列出定存的觀測時間，不是銀行實際結清日；有效帳戶為 NULL。 | TEXT | YES | — | — | — |
+| 18 | `loan_interest_rate` | 貸款年利率百分比；銀行未提供或無法解析時為 NULL。 | REAL | YES | — | — | — |
+| 19 | `loan_category` | 貸款類別：housing（房屋貸款）、personal（信用貸款）或 other（其他貸款）。 | TEXT | YES | — | — | — |
+| 20 | `autopay_status` | 銀行頁面揭露的自動扣繳狀態：enabled（已設定）或 none（未設定）；來源未提供時為 NULL。 | TEXT | YES | — | — | — |
+| 21 | `autopay_bank_code` | 自動扣繳帳戶的金融機構代碼；銀行頁面未提供或無法辨識時為 NULL。 | TEXT | YES | — | — | — |
+| 22 | `autopay_account_last4` | 自動扣繳帳戶的帳號末四碼；不保存完整帳號。 | TEXT | YES | — | — | — |
+| 23 | `autopay_account_source_id` | 來源以完整帳號算出的自家存款帳戶 source_id，用於精準對應；只含雜湊，不含完整帳號。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -108,7 +256,12 @@ CREATE TABLE "bank_accounts" (
   bank_code TEXT,
   account_last4 TEXT,
   canonical_account_id TEXT REFERENCES "bank_accounts" (id),
-  credit_limit INTEGER, opened_date TEXT, maturity_date TEXT, inactive_at TEXT,
+  credit_limit INTEGER, opened_date TEXT, maturity_date TEXT, inactive_at TEXT, loan_interest_rate REAL, loan_category TEXT
+CHECK (
+  loan_category IS NULL
+  OR loan_category IN ('housing', 'personal', 'other')
+), autopay_status TEXT
+  CHECK (autopay_status IS NULL OR autopay_status IN ('enabled', 'none')), autopay_bank_code TEXT, autopay_account_last4 TEXT, autopay_account_source_id TEXT,
   UNIQUE (connector_id, source_id)
 )
 ```
@@ -137,6 +290,10 @@ CREATE TABLE "bank_accounts" (
 | 13 | `payment_due_date` | 信用卡帳單繳款期限。 | TEXT | YES | — | — | — |
 | 14 | `no_payment_needed` | 是否標示為本期不需要繳款的旗標。 | INTEGER | YES | — | — | — |
 | 15 | `statement_closing_date` | 信用卡帳單結帳日。 | TEXT | YES | — | — | — |
+| 16 | `loan_payment_amount` | 貸款本期應繳金額；來源未提供時為 NULL。 | INTEGER | YES | — | — | — |
+| 17 | `loan_payment_status` | 貸款扣款狀態，例如 scheduled 或 collection_incomplete。 | TEXT | YES | — | — | — |
+| 18 | `loan_installments_paid` | 貸款已繳期數；來源未提供時為 NULL。 | INTEGER | YES | — | — | — |
+| 19 | `loan_installments_total` | 貸款總期數；來源未提供時為 NULL。 | INTEGER | YES | — | — | — |
 
 #### Foreign keys
 
@@ -169,24 +326,25 @@ CREATE TABLE "bank_balance_snapshots" (
   statement_balance INTEGER,
   payment_due_date TEXT,
   no_payment_needed INTEGER,
-  statement_closing_date TEXT,
+  statement_closing_date TEXT, loan_payment_amount INTEGER, loan_payment_status TEXT CHECK (loan_payment_status IS NULL OR loan_payment_status IN ('scheduled', 'collection_incomplete')), loan_installments_paid INTEGER, loan_installments_total INTEGER,
   UNIQUE (connector_id, account_id, source_id)
 )
 ```
 
 ### `bank_transaction_preferences`
 
-> 用途：使用者對銀行交易計算方式的個別偏好。
-> 注意：目前主要用來記錄交易是否排除於資產或支出計算之外；沒有偏好的交易不會建立記錄。 transaction_id 以 FK 參照 bank_transactions；NO ACTION 禁止刪除仍有偏好引用的交易，合併時須先移轉偏好。
+> 用途：使用者對銀行交易的個別偏好：是否排除計算，以及交易備註。
+> 注意：沒有任何偏好的交易不會建立記錄；計算選擇與備註都清空時刪除整筆。 excluded_from_calculation 為 NULL 表示使用者沒有選擇計入或排除，只寫備註不改變預設計算。 transaction_id 以 FK 參照 bank_transactions；NO ACTION 禁止刪除仍有偏好引用的交易，合併時須先移轉偏好。
 
 #### Columns
 
 | 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
 | ---: | --- | --- | --- | :---: | --- | ---: | --- |
 | 1 | `transaction_id` | 套用偏好的 bank_transactions 記錄識別碼。 | TEXT | NO | — | 1 | — |
-| 2 | `excluded_from_calculation` | 是否將此交易排除於計算，0 表示納入、1 表示排除。 | INTEGER | NO | 0 | — | — |
+| 2 | `excluded_from_calculation` | 是否將此交易排除於計算，0 表示納入、1 表示排除；NULL 表示沒有選擇，依預設規則計算。 | INTEGER | YES | — | — | — |
 | 3 | `created_at` | 偏好首次建立的時間。 | TEXT | NO | — | — | — |
 | 4 | `updated_at` | 偏好最後更新的時間。 | TEXT | NO | — | — | — |
+| 5 | `note` | 使用者寫的交易備註，已去除前後空白；沒有備註時為 NULL。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -205,9 +363,10 @@ CREATE TABLE "bank_balance_snapshots" (
 ```sql
 CREATE TABLE "bank_transaction_preferences" (
   transaction_id TEXT NOT NULL PRIMARY KEY REFERENCES bank_transactions (id),
-  excluded_from_calculation INTEGER NOT NULL DEFAULT 0 CHECK (excluded_from_calculation IN (0, 1)),
+  excluded_from_calculation INTEGER CHECK (excluded_from_calculation IN (0, 1)),
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  note TEXT CHECK (note IS NULL OR length(trim(note)) > 0)
 )
 ```
 
@@ -237,6 +396,8 @@ CREATE TABLE "bank_transaction_preferences" (
 | 15 | `status` | 交易狀態，目前限制為 pending 或 posted。 | TEXT | NO | 'posted' | — | — |
 | 16 | `transfer_peer_id` | 定存衍生活動所配對之活存交易的系統識別碼，供本金轉帳一對一配對；沒有明確配對時為 NULL。 以 NO ACTION FK 參照 bank_transactions.id，刪除被引用交易前須先移轉引用。 | TEXT | YES | — | — | — |
 | 17 | `matched_transaction_id` | 授權對應的已入帳交易 ID，一對一；僅隱藏 pending 且已配對的交易，同 ID 入帳可指向自身。 以 NO ACTION FK 參照 bank_transactions.id，允許自我引用，不自動清空或級聯刪除。 | TEXT | YES | — | — | — |
+| 18 | `card_last4` | 共用信用卡帳戶中實際刷卡的卡號末四碼，由 connector 正規化；只供顯示，不參與交易識別、配對或負債計算。無法確定時為 NULL。 | TEXT | YES | — | — | — |
+| 19 | `card_name` | card_last4 能唯一對應到具名卡片時的卡名；末四碼重複、欄位矛盾或缺少卡名時為 NULL。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -278,7 +439,7 @@ CREATE TABLE "bank_transactions" (
   effective_date TEXT AS (COALESCE(posted_date, authorized_at, '')),
   status TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('pending', 'posted')),
   transfer_peer_id TEXT REFERENCES "bank_transactions" (id),
-  matched_transaction_id TEXT REFERENCES "bank_transactions" (id),
+  matched_transaction_id TEXT REFERENCES "bank_transactions" (id), card_last4 TEXT, card_name TEXT,
   UNIQUE (connector_id, account_id, source_id)
 )
 ```
@@ -694,8 +855,8 @@ CREATE TABLE "exchange_rates" (
 
 ### `investment_positions`
 
-> 用途：投資帳戶在特定日期的持倉與資產市值快照。
-> 注意：同一 connector、source 與日期可有一組持倉；最新持倉與分頁查詢依 as_of_date。
+> 用途：投資帳戶在特定日期的持倉、成本、損益與資產市值快照。
+> 注意：同一 connector、source 與日期可有一組持倉；最新查詢先取各 connector、asset type 的原始最新 snapshot，再以台灣曆日依可辨識的 broker、account、market scope 去重，未知帳戶維持 connector 隔離。
 
 #### Columns
 
@@ -704,17 +865,22 @@ CREATE TABLE "exchange_rates" (
 | 1 | `id` | 持倉快照的系統識別碼。 | TEXT | NO | — | 1 | — |
 | 2 | `connector_id` | 產生此持倉的外部連接器識別碼。 | TEXT | NO | — | — | — |
 | 3 | `source_id` | 外部來源系統提供的持倉識別碼。 | TEXT | NO | — | — | — |
-| 4 | `asset_type` | 資產類型，目前限制為 stock、etf 或 fund。 | TEXT | NO | — | — | — |
-| 5 | `symbol` | 證券、基金或 ETF 的代號。 | TEXT | YES | — | — | — |
-| 6 | `name` | 投資標的名稱。 | TEXT | NO | — | — | — |
-| 7 | `quantity` | 持有數量。 | REAL | YES | — | — | — |
-| 8 | `market_value` | 持倉的市場價值。 | INTEGER | YES | — | — | — |
-| 9 | `cash_balance` | 此投資帳戶或資產項目中的現金餘額。 | INTEGER | YES | — | — | — |
-| 10 | `currency` | 市值與現金使用的幣別，預設為 TWD。 | TEXT | NO | 'TWD' | — | — |
-| 11 | `as_of_date` | 持倉快照所代表的日期。 | TEXT | NO | — | — | — |
-| 12 | `raw_payload` | 連接器回傳的原始或正規化 JSON。 | TEXT | YES | — | — | — |
-| 13 | `created_at` | 持倉首次寫入的時間。 | TEXT | NO | — | — | — |
-| 14 | `updated_at` | 持倉最後更新的時間。 | TEXT | NO | — | — | — |
+| 4 | `asset_type` | 資產類型，目前限制為 stock、etf、fund 或 crypto；crypto 為加密貨幣交易所持倉，市值為同步當下換算的台幣。 | TEXT | NO | — | — | — |
+| 5 | `symbol` | 證券、基金或 ETF 的代號；crypto 為大寫幣種代碼，合約權益與錢包總值為 NULL。 | TEXT | YES | — | — | — |
+| 6 | `name` | 投資標的名稱；crypto 的幣種列為交易所名稱，合約權益與錢包總值為帳戶名稱。 | TEXT | NO | — | — | — |
+| 7 | `broker_no` | 證券商代碼；來源無法可靠辨識時為 NULL。 | TEXT | YES | — | — | — |
+| 8 | `broker_account` | 證券商帳號；來源無法可靠辨識時為 NULL。 | TEXT | YES | — | — | — |
+| 9 | `market` | 市場代碼，例如 TW 或 US；來源無法可靠辨識時為 NULL。 | TEXT | YES | — | — | — |
+| 10 | `quantity` | 持有數量。 | REAL | YES | — | — | — |
+| 11 | `market_value` | 持倉的市場價值，保留來源提供的原幣小數。 | REAL | YES | — | — | — |
+| 12 | `cash_balance` | 此投資帳戶或資產項目中的現金餘額，保留來源提供的原幣小數。 | REAL | YES | — | — | — |
+| 13 | `cost_basis` | 來源提供的持倉成本；來源未提供時為 NULL，不由市值與損益反推。 | REAL | YES | — | — | — |
+| 14 | `unrealized_pnl` | 來源提供的未實現損益；來源未提供時為 NULL，不由市值與成本反推。 | REAL | YES | — | — | — |
+| 15 | `currency` | 市值與現金使用的幣別，預設為 TWD。 | TEXT | NO | 'TWD' | — | — |
+| 16 | `as_of_date` | 持倉快照所代表的日期。 | TEXT | NO | — | — | — |
+| 17 | `raw_payload` | 連接器回傳的原始或正規化 JSON。 | TEXT | YES | — | — | — |
+| 18 | `created_at` | 持倉首次寫入的時間。 | TEXT | NO | — | — | — |
+| 19 | `updated_at` | 持倉最後更新的時間。 | TEXT | NO | — | — | — |
 
 #### Foreign keys
 
@@ -726,6 +892,7 @@ CREATE TABLE "exchange_rates" (
 | --- | :---: | :---: | --- | --- |
 | `idx_investment_positions_as_of_date` | 否 | 否 | `as_of_date` | `CREATE INDEX idx_investment_positions_as_of_date<br>  ON investment_positions (as_of_date)` |
 | `idx_investment_positions_asset_type` | 否 | 否 | `asset_type` | `CREATE INDEX idx_investment_positions_asset_type<br>  ON investment_positions (asset_type)` |
+| `idx_investment_positions_identity_scope` | 否 | 否 | `broker_no`, `broker_account`, `market`, `as_of_date`, `updated_at` | `CREATE INDEX idx_investment_positions_identity_scope<br>  ON investment_positions (broker_no, broker_account, market, as_of_date DESC, updated_at DESC)` |
 | `idx_investment_positions_latest_scope` | 否 | 否 | `connector_id`, `asset_type`, `as_of_date` | `CREATE INDEX idx_investment_positions_latest_scope<br>  ON investment_positions (connector_id, asset_type, as_of_date DESC)` |
 | `idx_investment_positions_page` | 否 | 否 | `as_of_date`, `asset_type`, `name`, `id` | `CREATE INDEX idx_investment_positions_page<br>  ON investment_positions (as_of_date DESC, asset_type ASC, name ASC, id ASC)` |
 
@@ -736,12 +903,17 @@ CREATE TABLE "investment_positions" (
   id TEXT NOT NULL PRIMARY KEY,
   connector_id TEXT NOT NULL,
   source_id TEXT NOT NULL,
-  asset_type TEXT NOT NULL CHECK (asset_type IN ('stock', 'etf', 'fund')),
+  asset_type TEXT NOT NULL CHECK (asset_type IN ('stock', 'etf', 'fund', 'crypto')),
   symbol TEXT,
   name TEXT NOT NULL,
+  broker_no TEXT,
+  broker_account TEXT,
+  market TEXT,
   quantity REAL,
-  market_value INTEGER,
-  cash_balance INTEGER,
+  market_value REAL,
+  cash_balance REAL,
+  cost_basis REAL,
+  unrealized_pnl REAL,
   currency TEXT NOT NULL DEFAULT 'TWD',
   as_of_date TEXT NOT NULL,
   raw_payload TEXT,
@@ -782,6 +954,7 @@ CREATE TABLE "investment_positions" (
 | 20 | `created_at` | 交易首次寫入的時間。 | TEXT | NO | — | — | — |
 | 21 | `updated_at` | 交易最後更新的時間。 | TEXT | NO | — | — | — |
 | 22 | `effective_date` | 由 trade_date 優先、posted_date 備援產生的排序日期。 | TEXT | YES | — | — | virtual |
+| 23 | `realized_pnl` | 來源提供的賣出已實現損益（已扣手續費與交易稅）；買進或來源沒有完整成本時為 NULL。 | REAL | YES | — | — | — |
 
 #### Foreign keys
 
@@ -819,7 +992,7 @@ CREATE TABLE "investment_transactions" (
   currency TEXT NOT NULL DEFAULT 'TWD',
   raw_payload TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL, effective_date TEXT AS (COALESCE(trade_date, posted_date, '')),
+  updated_at TEXT NOT NULL, effective_date TEXT AS (COALESCE(trade_date, posted_date, '')), realized_pnl REAL,
   UNIQUE (connector_id, account_id, source_id)
 )
 ```
@@ -929,7 +1102,7 @@ CREATE TABLE "invoice_transaction_preferences" (
 ### `invoices`
 
 > 用途：電子發票的抬頭與總額主檔。
-> 注意：商品明細另存於 invoice_line_items；同一 connector 與 source_id 只保留一張發票。
+> 注意：商品明細另存於 invoice_line_items；同一 connector 與 source_id 只保留一張發票。excluded_from_calculation 是使用者設定，同步 upsert 只更新來源欄位，不得覆寫此欄位；變更此欄位也不更新 updated_at。
 
 #### Columns
 
@@ -945,6 +1118,7 @@ CREATE TABLE "invoice_transaction_preferences" (
 | 8 | `raw_payload` | 連接器回傳的原始或正規化 JSON。 | TEXT | YES | — | — | — |
 | 9 | `created_at` | 發票首次寫入的時間。 | TEXT | NO | — | — | — |
 | 10 | `updated_at` | 發票最後更新的時間。 | TEXT | NO | — | — | — |
+| 11 | `excluded_from_calculation` | 未配對到銀行或信用卡交易時，是否將此純發票活動排除於收支計算；0 表示納入（預設）、1 表示排除。現金消費的發票在提款時已計入支出，可逐筆排除以免重複計算；配對交易後改以交易的計算偏好為準。 | INTEGER | NO | 0 | — | — |
 
 #### Foreign keys
 
@@ -970,7 +1144,8 @@ CREATE TABLE "invoices" (
   amount INTEGER NOT NULL,
   raw_payload TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, excluded_from_calculation INTEGER NOT NULL DEFAULT 0
+  CHECK (excluded_from_calculation IN (0, 1)),
   UNIQUE (connector_id, source_id)
 )
 ```
@@ -1011,6 +1186,58 @@ CREATE TABLE "manual_assets" (
 , currency TEXT NOT NULL DEFAULT 'TWD')
 ```
 
+### `manual_sync_runs`
+
+> 用途：使用者按下同步後交由 Queue consumer 執行的背景手動同步，讓前端離開或重新整理不影響同步。
+> 注意：每個來源同時最多一個 queued 或 running run；來源的同步鎖被其他同步占用時不建立。Queue 訊息只帶 run ID，不保存憑證、OTP、驗證碼或 session；需要使用者輸入的 challenge 仍只存於來源的加密設定。只有持有同步鎖的 queued run 能轉為 running，重送訊息不會再次登入銀行。已結案超過 7 天的 run 由 Cron 恢復流程清除。
+
+#### Columns
+
+| 順序 | 欄位 | 意義 | SQLite type | 可為 NULL | 預設值 | PK 順序 | Generated |
+| ---: | --- | --- | --- | :---: | --- | ---: | --- |
+| 1 | `id` | 背景執行 ID，也是執行期間的同步鎖 owner。 | TEXT | NO | — | 1 | — |
+| 2 | `connector_id` | 要同步的來源。 | TEXT | NO | — | — | — |
+| 3 | `scope` | 同步範圍；一般來源為 all。 | TEXT | NO | 'all' | — | — |
+| 4 | `status` | queued 排隊中、running 執行中、completed 完成、failed 失敗、needs_user_action 需要使用者處理、cancelled 已取消。 | TEXT | NO | — | — | — |
+| 5 | `error_code` | 失敗或需要處理時的 API 錯誤代碼，供前端決定後續操作。 | TEXT | YES | — | — | — |
+| 6 | `last_error` | 已遮蔽敏感資訊的錯誤訊息。 | TEXT | YES | — | — | — |
+| 7 | `retry_count` | 登入前因 Browser Run 容量不足而重新排隊的次數。 | INTEGER | NO | 0 | — | — |
+| 8 | `created_at` | 排入佇列的時間，用於判斷排隊逾時。 | TEXT | NO | — | — | — |
+| 9 | `started_at` | Queue consumer 取得同步鎖並開始執行的時間；重新排隊時清除。 | TEXT | YES | — | — | — |
+| 10 | `updated_at` | 最後一次狀態轉換的時間。 | TEXT | NO | — | — | — |
+| 11 | `completed_at` | 完成、失敗、需要處理或取消而結案的時間。 | TEXT | YES | — | — | — |
+
+#### Foreign keys
+
+—
+
+#### Indexes
+
+| Index | Unique | Partial | 欄位 | 定義 |
+| --- | :---: | :---: | --- | --- |
+| `idx_manual_sync_runs_completed` | 否 | 否 | `completed_at` | `CREATE INDEX idx_manual_sync_runs_completed<br>  ON manual_sync_runs (completed_at DESC)` |
+| `idx_manual_sync_runs_one_active` | 是 | 是 | `connector_id` | `CREATE UNIQUE INDEX idx_manual_sync_runs_one_active<br>  ON manual_sync_runs (connector_id)<br>  WHERE status IN ('queued', 'running')` |
+
+#### DDL
+
+```sql
+CREATE TABLE manual_sync_runs (
+  id TEXT PRIMARY KEY NOT NULL,
+  connector_id TEXT NOT NULL,
+  scope TEXT NOT NULL DEFAULT 'all',
+  status TEXT NOT NULL CHECK (status IN (
+    'queued', 'running', 'completed', 'failed', 'needs_user_action', 'cancelled'
+  )),
+  error_code TEXT,
+  last_error TEXT,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  updated_at TEXT NOT NULL,
+  completed_at TEXT
+)
+```
+
 ### `net_worth_history`
 
 > 用途：按日期保存的淨資產或資產類別歷史數值，用於圖表與歷史查詢。
@@ -1023,7 +1250,7 @@ CREATE TABLE "manual_assets" (
 | 1 | `id` | 歷史點的系統識別碼。 | TEXT | NO | — | 1 | — |
 | 2 | `date` | 此數值所代表的日期。 | TEXT | NO | — | — | — |
 | 3 | `net_worth` | 該日期與資產類型的金額；手動資產保留其設定幣別，其餘讀模型通常以 TWD 表示。 | INTEGER | NO | — | — | — |
-| 4 | `asset_type` | 資產類型，例如 total、deposit、stock、fund 或手動資產 id。 | TEXT | NO | 'total' | — | — |
+| 4 | `asset_type` | 資產類型，例如 total、deposit、stock、fund、crypto 或手動資產 id。 | TEXT | NO | 'total' | — | — |
 | 5 | `source` | 數值來源，例如 bank 或 manual。 | TEXT | NO | — | — | — |
 | 6 | `snapshotted_at` | 此歷史點實際建立或重算的時間。 | TEXT | NO | — | — | — |
 
@@ -1055,7 +1282,7 @@ CREATE TABLE "net_worth_history" (
 ### `notification_preferences`
 
 > 用途：此單一部署的同步推播偏好設定。
-> 注意：id 固定為 default；成功通知預設關閉，失敗與需要使用者處理預設開啟。
+> 注意：id 固定為 default；成功通知預設關閉，失敗、需要使用者處理與繳款提醒預設開啟。
 
 #### Columns
 
@@ -1066,6 +1293,7 @@ CREATE TABLE "net_worth_history" (
 | 3 | `notify_failed` | 是否在排程同步失敗時顯示推播。 | INTEGER | NO | 1 | — | — |
 | 4 | `notify_needs_user_action` | 是否在同步需要 OTP、CAPTCHA 或重新登入時顯示推播。 | INTEGER | NO | 1 | — | — |
 | 5 | `updated_at` | 推播偏好最後更新的時間。 | TEXT | NO | — | — | — |
+| 6 | `notify_payment_due` | 是否在預設排程同步摘要附上近期繳款提醒；今天或明天到期、扣款未完成或已過期限時，即使成功通知關閉也會送出摘要。 | INTEGER | NO | 1 | — | — |
 
 #### Foreign keys
 
@@ -1084,7 +1312,7 @@ CREATE TABLE "notification_preferences" (
   notify_failed INTEGER NOT NULL DEFAULT 1,
   notify_needs_user_action INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL
-)
+, notify_payment_due INTEGER NOT NULL DEFAULT 1)
 ```
 
 ### `push_subscriptions`
@@ -1169,7 +1397,7 @@ CREATE TABLE scheduled_sync_batch_results (
 
 ### `scheduled_sync_batches`
 
-> 用途：追蹤預設排程中需彙總推播的一輪同步工作。
+> 用途：各排程同步批次的狀態與同步前後資產、信用卡及貸款負債快照。
 > 注意：同一 schedule_key 同時只保留一個未 claim 批次；建立時固定整輪成員，所有成員完成或略過後只允許一個 scheduler claim 推播。建立新輪次時會清理超過 30 天的已結案批次。
 
 #### Columns
@@ -1188,6 +1416,8 @@ CREATE TABLE scheduled_sync_batch_results (
 | 10 | `assets_after_twd` | 批次完成後以新臺幣換算的資產總額。 | INTEGER | YES | — | — | — |
 | 11 | `credit_card_debt_after_twd` | 批次完成後以新臺幣換算的信用卡負債總額。 | INTEGER | YES | — | — | — |
 | 12 | `missing_currencies_after` | 批次完成後缺少匯率、以新台幣 0 元計值的幣別 JSON 陣列。 | TEXT | NO | '[]' | — | — |
+| 13 | `loan_debt_before_twd` | 批次開始前以新臺幣換算的貸款負債總額；遷移前建立的報告為 NULL。 | INTEGER | YES | — | — | — |
+| 14 | `loan_debt_after_twd` | 批次完成後以新臺幣換算的貸款負債總額；遷移前建立的報告為 NULL。 | INTEGER | YES | — | — | — |
 
 #### Foreign keys
 
@@ -1208,7 +1438,7 @@ CREATE TABLE "scheduled_sync_batches" (
   schedule_key TEXT NOT NULL DEFAULT 'default' CHECK (schedule_key = 'default'),
   notification_claimed_at TEXT,
   created_at TEXT NOT NULL
-, completed_at TEXT, is_baseline INTEGER NOT NULL DEFAULT 0, assets_before_twd INTEGER, credit_card_debt_before_twd INTEGER, missing_currencies_before TEXT NOT NULL DEFAULT '[]', assets_after_twd INTEGER, credit_card_debt_after_twd INTEGER, missing_currencies_after TEXT NOT NULL DEFAULT '[]')
+, completed_at TEXT, is_baseline INTEGER NOT NULL DEFAULT 0, assets_before_twd INTEGER, credit_card_debt_before_twd INTEGER, missing_currencies_before TEXT NOT NULL DEFAULT '[]', assets_after_twd INTEGER, credit_card_debt_after_twd INTEGER, missing_currencies_after TEXT NOT NULL DEFAULT '[]', loan_debt_before_twd INTEGER, loan_debt_after_twd INTEGER)
 ```
 
 ### `sync_activity_changes`
@@ -1353,7 +1583,10 @@ CREATE TABLE sync_activity_runs (
 | 16 | `updated_at` | 同步工作最後更新的時間。 | TEXT | NO | — | — | — |
 | 17 | `schedule_mode` | 排程模式；inherit 使用全域設定，custom 使用工作自己的設定。 | TEXT | NO | 'inherit' | — | — |
 | 18 | `preferred_time` | 每日或每週排程偏好的台北時間。 | TEXT | NO | '06:00' | — | — |
-| 19 | `preferred_weekday` | 每週排程的星期，0 代表週日、6 代表週六。 | INTEGER | NO | 1 | — | — |
+| 19 | `preferred_weekday` | 每週排程的單日相容欄位，0 代表週日、6 代表週六；有星期清單時保存清單第一天。 | INTEGER | NO | 1 | — | — |
+| 20 | `preferred_weekdays` | 每週執行日的 JSON 陣列，0 代表週日、6 代表週六；NULL 沿用 preferred_weekday 單日設定。 | TEXT | YES | — | — | — |
+| 21 | `last_error_code` | 最近一次失敗或需要使用者處理的 API 錯誤代碼，供前端接續驗證流程；成功時清空。 | TEXT | YES | — | — | — |
+| 22 | `lock_phase` | 持有同步鎖的一般同步目前階段：login 登入、fetching 取得資料、saving 儲存結果；取得或釋放鎖時清空。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -1386,7 +1619,7 @@ CREATE TABLE "sync_jobs" (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, schedule_mode TEXT NOT NULL DEFAULT 'inherit'
   CHECK (schedule_mode IN ('inherit', 'custom')), preferred_time TEXT NOT NULL DEFAULT '06:00', preferred_weekday INTEGER NOT NULL DEFAULT 1
-  CHECK (preferred_weekday BETWEEN 0 AND 6),
+  CHECK (preferred_weekday BETWEEN 0 AND 6), preferred_weekdays TEXT, last_error_code TEXT, lock_phase TEXT,
   UNIQUE (connector_id, scope)
 )
 ```
@@ -1405,7 +1638,8 @@ CREATE TABLE "sync_jobs" (
 | 3 | `preferred_time` | 預設每日或每週執行時間，使用台北時間。 | TEXT | NO | — | — | — |
 | 4 | `timezone` | 排程使用的時區，目前為 Asia/Taipei。 | TEXT | NO | — | — | — |
 | 5 | `updated_at` | 全域排程最後更新的時間。 | TEXT | NO | — | — | — |
-| 6 | `preferred_weekday` | 每週排程的預設星期，0 代表週日、6 代表週六。 | INTEGER | NO | 1 | — | — |
+| 6 | `preferred_weekday` | 每週排程的預設單日相容欄位，0 代表週日、6 代表週六；有星期清單時保存清單第一天。 | INTEGER | NO | 1 | — | — |
+| 7 | `preferred_weekdays` | 每週預設執行日的 JSON 陣列，0 代表週日、6 代表週六；NULL 沿用 preferred_weekday 單日設定。 | TEXT | YES | — | — | — |
 
 #### Foreign keys
 
@@ -1425,7 +1659,7 @@ CREATE TABLE "sync_schedule_settings" (
   timezone TEXT NOT NULL,
   updated_at TEXT NOT NULL
 , preferred_weekday INTEGER NOT NULL DEFAULT 1
-  CHECK (preferred_weekday BETWEEN 0 AND 6))
+  CHECK (preferred_weekday BETWEEN 0 AND 6), preferred_weekdays TEXT)
 ```
 
 ### `sync_write_staging`
@@ -1605,8 +1839,8 @@ CREATE TABLE "tdcc_sync_runs" (
     'queued', 'initializing', 'processing', 'promoting',
     'completed', 'failed', 'needs_user_action'
   )),
-
-
+  -- The run retains the encrypted provider state it was initialized with.
+  -- It is never exposed in an API response or log.
   encrypted_config TEXT,
   encrypted_session TEXT,
   session_json TEXT CHECK (session_json IS NULL OR json_valid(session_json)),
@@ -1634,54 +1868,81 @@ CREATE TABLE "tdcc_sync_runs" (
 
 Migration 是 schema 演進的 source of truth；若要了解某欄位的變更原因，請從對應 migration 檔案與 Git history 追查。
 
-- [`0001_initial.sql`](../packages/db/migrations/0001_initial.sql)
-- [`0002_bank_account_credit.sql`](../packages/db/migrations/0002_bank_account_credit.sql)
-- [`0003_sync_jobs.sql`](../packages/db/migrations/0003_sync_jobs.sql)
-- [`0004_sync_job_defaults.sql`](../packages/db/migrations/0004_sync_job_defaults.sql)
-- [`0005_sinopac_sync_job.sql`](../packages/db/migrations/0005_sinopac_sync_job.sql)
-- [`0006_sinopac_app_json_cleanup.sql`](../packages/db/migrations/0006_sinopac_app_json_cleanup.sql)
-- [`0008_default_sync_schedule.sql`](../packages/db/migrations/0008_default_sync_schedule.sql)
-- [`0009_weekly_sync_weekday.sql`](../packages/db/migrations/0009_weekly_sync_weekday.sql)
-- [`0010_bank_transaction_preferences.sql`](../packages/db/migrations/0010_bank_transaction_preferences.sql)
-- [`0011_classification_rule_actions.sql`](../packages/db/migrations/0011_classification_rule_actions.sql)
-- [`0012_sync_staging_and_query_indexes.sql`](../packages/db/migrations/0012_sync_staging_and_query_indexes.sql)
-- [`0013_invoice_transaction_preferences.sql`](../packages/db/migrations/0013_invoice_transaction_preferences.sql)
-- [`0014_bank_transaction_status.sql`](../packages/db/migrations/0014_bank_transaction_status.sql)
-- [`0015_push_notifications.sql`](../packages/db/migrations/0015_push_notifications.sql)
-- [`0016_scheduled_sync_notification_batches.sql`](../packages/db/migrations/0016_scheduled_sync_notification_batches.sql)
-- [`0017_taishin_sync_job.sql`](../packages/db/migrations/0017_taishin_sync_job.sql)
-- [`0018_esun_credit_transaction_signs.sql`](../packages/db/migrations/0018_esun_credit_transaction_signs.sql)
-- [`0019_rename_other_classification.sql`](../packages/db/migrations/0019_rename_other_classification.sql)
-- [`0020_connector_cursor_secret_cleanup.sql`](../packages/db/migrations/0020_connector_cursor_secret_cleanup.sql)
-- [`0021_ctbc_sync_job.sql`](../packages/db/migrations/0021_ctbc_sync_job.sql)
-- [`0023_disable_unconfigured_sync_jobs.sql`](../packages/db/migrations/0023_disable_unconfigured_sync_jobs.sql)
-- [`0024_manual_asset_currency.sql`](../packages/db/migrations/0024_manual_asset_currency.sql)
-- [`0025_bank_time_deposit.sql`](../packages/db/migrations/0025_bank_time_deposit.sql)
-- [`0026_obank_sync_job.sql`](../packages/db/migrations/0026_obank_sync_job.sql)
-- [`0027_scheduled_sync_reports.sql`](../packages/db/migrations/0027_scheduled_sync_reports.sql)
-- [`0028_einvoice_durable_runs.sql`](../packages/db/migrations/0028_einvoice_durable_runs.sql)
-- [`0029_scheduled_sync_manual_recovery.sql`](../packages/db/migrations/0029_scheduled_sync_manual_recovery.sql)
-- [`0030_hncb_sync_job.sql`](../packages/db/migrations/0030_hncb_sync_job.sql)
-- [`0031_tdcc_durable_runs.sql`](../packages/db/migrations/0031_tdcc_durable_runs.sql)
-- [`0032_tdcc_bank_transaction_identity_cleanup.sql`](../packages/db/migrations/0032_tdcc_bank_transaction_identity_cleanup.sql)
-- [`0033_tdcc_stale_identity_cleanup.sql`](../packages/db/migrations/0033_tdcc_stale_identity_cleanup.sql)
-- [`0034_skbank_sync_job.sql`](../packages/db/migrations/0034_skbank_sync_job.sql)
-- [`0035_tdcc_late_identity_reconciliation.sql`](../packages/db/migrations/0035_tdcc_late_identity_reconciliation.sql)
-- [`0036_firstbank_sync_job.sql`](../packages/db/migrations/0036_firstbank_sync_job.sql)
-- [`0037_activity_time_precision.sql`](../packages/db/migrations/0037_activity_time_precision.sql)
-- [`0038_add_default_classification_categories.sql`](../packages/db/migrations/0038_add_default_classification_categories.sql)
-- [`0039_add_default_classification_rules.sql`](../packages/db/migrations/0039_add_default_classification_rules.sql)
-- [`0040_bank_transaction_day_index.sql`](../packages/db/migrations/0040_bank_transaction_day_index.sql)
-- [`0041_time_deposit_lifecycle.sql`](../packages/db/migrations/0041_time_deposit_lifecycle.sql)
-- [`0042_bank_transaction_lifecycle.sql`](../packages/db/migrations/0042_bank_transaction_lifecycle.sql)
-- [`0043_merge_legacy_invoice_duplicates.sql`](../packages/db/migrations/0043_merge_legacy_invoice_duplicates.sql)
-- [`0044_text_primary_keys_not_null.sql`](../packages/db/migrations/0044_text_primary_keys_not_null.sql)
-- [`0045_preference_foreign_keys.sql`](../packages/db/migrations/0045_preference_foreign_keys.sql)
-- [`0046_transaction_self_foreign_keys.sql`](../packages/db/migrations/0046_transaction_self_foreign_keys.sql)
-- [`0047_sync_activity_details.sql`](../packages/db/migrations/0047_sync_activity_details.sql)
+- [`0001_initial.sql`](../apps/worker/migrations/0001_initial.sql)
+- [`0002_bank_account_credit.sql`](../apps/worker/migrations/0002_bank_account_credit.sql)
+- [`0003_sync_jobs.sql`](../apps/worker/migrations/0003_sync_jobs.sql)
+- [`0004_sync_job_defaults.sql`](../apps/worker/migrations/0004_sync_job_defaults.sql)
+- [`0005_sinopac_sync_job.sql`](../apps/worker/migrations/0005_sinopac_sync_job.sql)
+- [`0006_sinopac_app_json_cleanup.sql`](../apps/worker/migrations/0006_sinopac_app_json_cleanup.sql)
+- [`0008_default_sync_schedule.sql`](../apps/worker/migrations/0008_default_sync_schedule.sql)
+- [`0009_weekly_sync_weekday.sql`](../apps/worker/migrations/0009_weekly_sync_weekday.sql)
+- [`0010_bank_transaction_preferences.sql`](../apps/worker/migrations/0010_bank_transaction_preferences.sql)
+- [`0011_classification_rule_actions.sql`](../apps/worker/migrations/0011_classification_rule_actions.sql)
+- [`0012_sync_staging_and_query_indexes.sql`](../apps/worker/migrations/0012_sync_staging_and_query_indexes.sql)
+- [`0013_invoice_transaction_preferences.sql`](../apps/worker/migrations/0013_invoice_transaction_preferences.sql)
+- [`0014_bank_transaction_status.sql`](../apps/worker/migrations/0014_bank_transaction_status.sql)
+- [`0015_push_notifications.sql`](../apps/worker/migrations/0015_push_notifications.sql)
+- [`0016_scheduled_sync_notification_batches.sql`](../apps/worker/migrations/0016_scheduled_sync_notification_batches.sql)
+- [`0017_taishin_sync_job.sql`](../apps/worker/migrations/0017_taishin_sync_job.sql)
+- [`0018_esun_credit_transaction_signs.sql`](../apps/worker/migrations/0018_esun_credit_transaction_signs.sql)
+- [`0019_rename_other_classification.sql`](../apps/worker/migrations/0019_rename_other_classification.sql)
+- [`0020_connector_cursor_secret_cleanup.sql`](../apps/worker/migrations/0020_connector_cursor_secret_cleanup.sql)
+- [`0021_ctbc_sync_job.sql`](../apps/worker/migrations/0021_ctbc_sync_job.sql)
+- [`0023_disable_unconfigured_sync_jobs.sql`](../apps/worker/migrations/0023_disable_unconfigured_sync_jobs.sql)
+- [`0024_manual_asset_currency.sql`](../apps/worker/migrations/0024_manual_asset_currency.sql)
+- [`0025_bank_time_deposit.sql`](../apps/worker/migrations/0025_bank_time_deposit.sql)
+- [`0026_obank_sync_job.sql`](../apps/worker/migrations/0026_obank_sync_job.sql)
+- [`0027_scheduled_sync_reports.sql`](../apps/worker/migrations/0027_scheduled_sync_reports.sql)
+- [`0028_einvoice_durable_runs.sql`](../apps/worker/migrations/0028_einvoice_durable_runs.sql)
+- [`0029_scheduled_sync_manual_recovery.sql`](../apps/worker/migrations/0029_scheduled_sync_manual_recovery.sql)
+- [`0030_hncb_sync_job.sql`](../apps/worker/migrations/0030_hncb_sync_job.sql)
+- [`0031_tdcc_durable_runs.sql`](../apps/worker/migrations/0031_tdcc_durable_runs.sql)
+- [`0032_tdcc_bank_transaction_identity_cleanup.sql`](../apps/worker/migrations/0032_tdcc_bank_transaction_identity_cleanup.sql)
+- [`0033_tdcc_stale_identity_cleanup.sql`](../apps/worker/migrations/0033_tdcc_stale_identity_cleanup.sql)
+- [`0034_skbank_sync_job.sql`](../apps/worker/migrations/0034_skbank_sync_job.sql)
+- [`0035_tdcc_late_identity_reconciliation.sql`](../apps/worker/migrations/0035_tdcc_late_identity_reconciliation.sql)
+- [`0036_firstbank_sync_job.sql`](../apps/worker/migrations/0036_firstbank_sync_job.sql)
+- [`0037_activity_time_precision.sql`](../apps/worker/migrations/0037_activity_time_precision.sql)
+- [`0038_add_default_classification_categories.sql`](../apps/worker/migrations/0038_add_default_classification_categories.sql)
+- [`0039_add_default_classification_rules.sql`](../apps/worker/migrations/0039_add_default_classification_rules.sql)
+- [`0040_bank_transaction_day_index.sql`](../apps/worker/migrations/0040_bank_transaction_day_index.sql)
+- [`0041_time_deposit_lifecycle.sql`](../apps/worker/migrations/0041_time_deposit_lifecycle.sql)
+- [`0042_bank_transaction_lifecycle.sql`](../apps/worker/migrations/0042_bank_transaction_lifecycle.sql)
+- [`0043_merge_legacy_invoice_duplicates.sql`](../apps/worker/migrations/0043_merge_legacy_invoice_duplicates.sql)
+- [`0044_text_primary_keys_not_null.sql`](../apps/worker/migrations/0044_text_primary_keys_not_null.sql)
+- [`0045_preference_foreign_keys.sql`](../apps/worker/migrations/0045_preference_foreign_keys.sql)
+- [`0046_transaction_self_foreign_keys.sql`](../apps/worker/migrations/0046_transaction_self_foreign_keys.sql)
+- [`0047_sync_activity_details.sql`](../apps/worker/migrations/0047_sync_activity_details.sql)
+- [`0048_kgibank_sync_job.sql`](../apps/worker/migrations/0048_kgibank_sync_job.sql)
+- [`0049_megabank_sync_job.sql`](../apps/worker/migrations/0049_megabank_sync_job.sql)
+- [`0050_nextbank_sync_job.sql`](../apps/worker/migrations/0050_nextbank_sync_job.sql)
+- [`0051_rakuten_sync_job.sql`](../apps/worker/migrations/0051_rakuten_sync_job.sql)
+- [`0052_bank_loan_overview.sql`](../apps/worker/migrations/0052_bank_loan_overview.sql)
+- [`0053_scheduled_sync_loan_debt.sql`](../apps/worker/migrations/0053_scheduled_sync_loan_debt.sql)
+- [`0054_weekly_sync_days.sql`](../apps/worker/migrations/0054_weekly_sync_days.sql)
+- [`0055_personal_loan_category.sql`](../apps/worker/migrations/0055_personal_loan_category.sql)
+- [`0056_manual_sync_runs.sql`](../apps/worker/migrations/0056_manual_sync_runs.sql)
+- [`0057_sync_job_lock_phase.sql`](../apps/worker/migrations/0057_sync_job_lock_phase.sql)
+- [`0058_fubon_sync_job.sql`](../apps/worker/migrations/0058_fubon_sync_job.sql)
+- [`0059_reward_donation_categories.sql`](../apps/worker/migrations/0059_reward_donation_categories.sql)
+- [`0060_feib_sync_job.sql`](../apps/worker/migrations/0060_feib_sync_job.sql)
+- [`0061_ai_classification.sql`](../apps/worker/migrations/0061_ai_classification.sql)
+- [`0062_bank_transaction_card.sql`](../apps/worker/migrations/0062_bank_transaction_card.sql)
+- [`0063_payment_due_notification.sql`](../apps/worker/migrations/0063_payment_due_notification.sql)
+- [`0064_payment_accounts.sql`](../apps/worker/migrations/0064_payment_accounts.sql)
+- [`0065_ubot_sync_job.sql`](../apps/worker/migrations/0065_ubot_sync_job.sql)
+- [`0066_crypto_asset_type.sql`](../apps/worker/migrations/0066_crypto_asset_type.sql)
+- [`0067_binance_max_sync_jobs.sql`](../apps/worker/migrations/0067_binance_max_sync_jobs.sql)
+- [`0068_invoice_calculation_exclusion.sql`](../apps/worker/migrations/0068_invoice_calculation_exclusion.sql)
+- [`0069_chb_sync_job.sql`](../apps/worker/migrations/0069_chb_sync_job.sql)
+- [`0070_align_inherited_sync_schedules.sql`](../apps/worker/migrations/0070_align_inherited_sync_schedules.sql)
+- [`0071_bank_transaction_preference_note.sql`](../apps/worker/migrations/0071_bank_transaction_preference_note.sql)
+- [`0072_investment_position_identity_and_pnl.sql`](../apps/worker/migrations/0072_investment_position_identity_and_pnl.sql)
+- [`0073_sinotrade_sync_job.sql`](../apps/worker/migrations/0073_sinotrade_sync_job.sql)
+- [`0074_investment_transaction_realized_pnl.sql`](../apps/worker/migrations/0074_investment_transaction_realized_pnl.sql)
 
 ## 程式碼導覽
 
 - Feature-specific SQL：`apps/worker/src/features/*/repository.ts`
-- 共用 D1 能力：`packages/db/src/`
-- 共用資料契約：`packages/core/`
+- 共用 D1 能力：`apps/worker/src/db/`
+- 共用資料契約：`shared/`

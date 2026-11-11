@@ -1,4 +1,4 @@
-import { createDrizzle } from "@taiwan-fin-hub/db";
+import { createDrizzle, isNotSupersededInvestmentTransaction } from "../../db";
 import { sql } from "drizzle-orm";
 
 export interface ActivitySearchInput {
@@ -34,10 +34,11 @@ export async function findActivitySearchDays(
         ELSE substr(COALESCE(txn.authorized_at, txn.posted_date), 1, 10) END AS day
       FROM bank_transactions txn
       JOIN bank_accounts account ON account.id = txn.account_id
+      LEFT JOIN bank_transaction_preferences preference ON preference.transaction_id = txn.id
       WHERE account.canonical_account_id IS NULL AND (txn.status <> 'pending' OR txn.matched_transaction_id IS NULL) AND (
         instr(lower(COALESCE(txn.description, '') || ' ' || COALESCE(txn.counterparty, '') || ' ' ||
           COALESCE(account.institution_name, '') || ' ' || COALESCE(account.account_name, '') || ' ' ||
-          COALESCE(account.account_last4, '') || ' 銀行 信用卡'), ${q}) > 0
+          COALESCE(account.account_last4, '') || ' ' || COALESCE(preference.note, '') || ' 銀行 信用卡'), ${q}) > 0
         OR account.id IN (SELECT value FROM json_each(${matchingIds}))
         OR EXISTS (SELECT 1 FROM classification_categories WHERE instr(lower(label), ${q}) > 0)
       )
@@ -48,9 +49,20 @@ export async function findActivitySearchDays(
       FROM invoices
       WHERE instr(lower(COALESCE(seller_name, '') || ' ' || COALESCE(invoice_number, '') || ' 電子發票'), ${q}) > 0
       UNION ALL
+      -- 跨日手動配對的活動在交易日期，命中發票時一併回傳該交易日期。
+      SELECT CASE WHEN length(txn.authorized_at) > 10
+        THEN COALESCE(date(txn.authorized_at, '+8 hours'), substr(txn.authorized_at, 1, 10))
+        ELSE substr(COALESCE(txn.authorized_at, txn.posted_date), 1, 10) END AS day
+      FROM invoices
+      JOIN invoice_transaction_preferences link
+        ON link.invoice_id = invoices.id AND link.decision = 'linked'
+      JOIN bank_transactions txn ON txn.id = link.transaction_id
+      WHERE instr(lower(COALESCE(invoices.seller_name, '') || ' ' || COALESCE(invoices.invoice_number, '') || ' 電子發票'), ${q}) > 0
+      UNION ALL
       SELECT substr(effective_date, 1, 10) AS day FROM investment_transactions
       WHERE instr(lower(COALESCE(name, '') || ' ' || COALESCE(symbol, '') || ' ' ||
         COALESCE(transaction_name, '') || ' ' || COALESCE(transaction_code, '') || ' 投資'), ${q}) > 0
+        AND ${isNotSupersededInvestmentTransaction()}
     )
     SELECT DISTINCT day FROM candidates
     WHERE day IS NOT NULL AND day != ''

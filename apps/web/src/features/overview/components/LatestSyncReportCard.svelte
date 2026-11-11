@@ -1,13 +1,13 @@
 <script lang="ts">
   import type { ApiClient } from "@/shared/api/client";
-  import { toStore } from "svelte/store";
   import { createQuery } from "@tanstack/svelte-query";
   import SyncActivityDetails from "./SyncActivityDetails.svelte";
   import { CircleCheckBig, RefreshCw, TriangleAlert } from "@lucide/svelte";
   import {
     connectorCatalog,
+    compareConnectorOrder,
     type ScheduledSyncReport,
-  } from "@taiwan-fin-hub/core";
+  } from "@taiwan-fin-hub/shared";
   import { syncReportActivitiesQuery } from "@/data/sync-reports/queries";
   import { formatCurrency, formatDateTime } from "@/shared/format/financial";
   import {
@@ -16,7 +16,6 @@
     signedFinancialChange,
     syncReportStatusPresentation,
     syncReportRecoveryMessage,
-    zeroRateCurrenciesMessage,
   } from "../model/sync-report";
 
   let {
@@ -45,8 +44,11 @@
   const recoveryMessage = $derived(
     report ? syncReportRecoveryMessage(report) : null,
   );
-  const zeroRateMessage = $derived(
-    report ? zeroRateCurrenciesMessage(report.missingCurrencies) : null,
+  // API 依 job id 字母排序；改用與資料來源頁相同的 catalog 順序。
+  const orderedSources = $derived(
+    [...(report?.sources ?? [])].sort((left, right) =>
+      compareConnectorOrder(left.connectorId, right.connectorId),
+    ),
   );
   const newRecordItems = $derived(
     report
@@ -74,6 +76,11 @@
             positiveChangeIsFavorable: false,
           },
           {
+            label: "貸款負債",
+            value: report.financialChange.loanDebt,
+            positiveChangeIsFavorable: false,
+          },
+          {
             label: "淨資產",
             value: report.financialChange.netWorth,
             positiveChangeIsFavorable: true,
@@ -82,13 +89,11 @@
       : [],
   );
   let sourcesOpen = $state(false);
-  const activities = createQuery(
-    toStore(() =>
-      syncReportActivitiesQuery(
-        () => api,
-        report?.id ?? "",
-        Boolean(report?.id) && sourcesOpen,
-      ),
+  const activities = createQuery(() =>
+    syncReportActivitiesQuery(
+      () => api,
+      report?.id ?? "",
+      Boolean(report?.id) && sourcesOpen,
     ),
   );
 
@@ -233,17 +238,6 @@
         {/if}
       </div>
 
-      {#if zeroRateMessage}
-        <div
-          class="flex items-start gap-2 rounded-lg bg-amber-50/70 px-3 py-2.5 text-amber-900"
-        >
-          <TriangleAlert class="mt-0.5 size-4 shrink-0" />
-          <p class="text-caption font-medium leading-relaxed">
-            {zeroRateMessage}
-          </p>
-        </div>
-      {/if}
-
       {#if report.sources.length > 0}
         <details
           bind:open={sourcesOpen}
@@ -256,7 +250,7 @@
             <span class="hidden group-open:inline">收合各資料來源</span>
           </summary>
           <div class="mt-3 grid gap-2">
-            {#each report.sources as source (`${report.id}:${source.connectorId}`)}
+            {#each orderedSources as source (`${report.id}:${source.connectorId}`)}
               <div class="border-b border-ink/8 py-3 last:border-b-0">
                 <div
                   class="flex flex-wrap items-center justify-between gap-x-4 gap-y-1"
@@ -276,10 +270,10 @@
                   </span>
                 </div>
                 <SyncActivityDetails
-                  page={$activities.data?.sources[source.connectorId]}
-                  loading={$activities.isPending}
-                  failed={$activities.isError}
-                  onRetry={() => $activities.refetch()}
+                  page={activities.data?.sources[source.connectorId]}
+                  loading={activities.isPending}
+                  failed={activities.isError}
+                  onRetry={() => activities.refetch()}
                 />
               </div>
             {/each}

@@ -1,12 +1,13 @@
 import {
   createDrizzle,
+  bankAccountPaymentAccounts,
   bankAccounts,
   bankBalanceSnapshots,
   bankTransactionPreferences,
   bankTransactions,
   creditCardBills,
-} from "@taiwan-fin-hub/db";
-import { and, asc, desc, eq, isNull, ne, sql } from "drizzle-orm";
+} from "../../db";
+import { and, asc, desc, eq, isNull, lt, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import type { TransactionPageCursor } from "../investments/repository";
 import type { MonthDateRange } from "../../platform/month-range";
@@ -17,6 +18,7 @@ const preference = alias(bankTransactionPreferences, "preference");
 const balance = alias(bankBalanceSnapshots, "balance");
 const bill = alias(creditCardBills, "b");
 const billAccount = alias(bankAccounts, "a");
+const paymentOverride = alias(bankAccountPaymentAccounts, "payment_override");
 
 // Must match idx_bank_transactions_transaction_day so range scans stay indexed.
 const bankTransactionDay = sql`CASE WHEN length(txn.authorized_at) > 10
@@ -35,6 +37,8 @@ const bankTransactionColumns = {
   accountId: sql<string>`${txn.accountId}`.as("accountId"),
   accountSourceId: sql<string>`${account.sourceId}`.as("accountSourceId"),
   accountName: sql<string>`${account.accountName}`.as("accountName"),
+  cardLast4: sql<string | null>`${txn.cardLast4}`.as("cardLast4"),
+  cardName: sql<string | null>`${txn.cardName}`.as("cardName"),
   institutionName: sql<string>`${account.institutionName}`.as(
     "institutionName",
   ),
@@ -57,6 +61,7 @@ const bankTransactionColumns = {
   calculationPreference: sql<
     number | null
   >`${preference.excludedFromCalculation}`.as("calculationPreference"),
+  note: sql<string | null>`${preference.note}`.as("note"),
 };
 
 const creditCardBillColumns = {
@@ -84,6 +89,8 @@ const creditCardBillColumns = {
 };
 
 export type BankTransactionPageRow = {
+  cardLast4?: string | null;
+  cardName?: string | null;
   id: string;
   connectorId: string;
   accountId: string;
@@ -104,6 +111,7 @@ export type BankTransactionPageRow = {
   effectiveDate: string;
   updatedAt: string;
   calculationPreference: number | null;
+  note?: string | null;
   transferPeerId?: string | null;
 };
 
@@ -146,6 +154,10 @@ export async function listBankAccounts(db: D1Database) {
       institutionName: account.institutionName,
       accountName: account.accountName,
       accountType: account.accountType,
+      loanCategory: sql<
+        "housing" | "personal" | "other" | null
+      >`${account.loanCategory}`.as("loanCategory"),
+      loanInterestRate: account.loanInterestRate,
       currency: account.currency,
       openedDate: account.openedDate,
       maturityDate: account.maturityDate,
@@ -155,6 +167,12 @@ export async function listBankAccounts(db: D1Database) {
       availableBalance: balance.availableBalance,
       paymentDueDate: balance.paymentDueDate,
       statementClosingDate: balance.statementClosingDate,
+      loanPaymentAmount: balance.loanPaymentAmount,
+      loanPaymentStatus: sql<
+        "scheduled" | "collection_incomplete" | null
+      >`${balance.loanPaymentStatus}`.as("loanPaymentStatus"),
+      loanInstallmentsPaid: balance.loanInstallmentsPaid,
+      loanInstallmentsTotal: balance.loanInstallmentsTotal,
       asOfAt: balance.asOfAt,
     })
     .from(account)
@@ -220,6 +238,18 @@ export async function listBankTransactionsInRange(
     .all();
 }
 
+export async function listBankTransactionsByIds(db: D1Database, ids: string[]) {
+  return bankTransactionQuery(db)
+    .where(
+      and(
+        visibleBankTransactionFilter,
+        sql`${txn.id} IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`,
+      ),
+    )
+    .orderBy(desc(txn.effectiveDate), desc(txn.updatedAt), desc(txn.id))
+    .all();
+}
+
 export async function listBankTransactionsForTransferMatching(
   db: D1Database,
   transactions: Array<Pick<BankTransactionPageRow, "amount" | "currency">>,
@@ -267,6 +297,26 @@ export async function listBankTransactionsForTransferMatching(
     .all();
 }
 
+/** Card purchases that refunds on the given cards may return. */
+export async function listBankTransactionsForRefundMatching(
+  db: D1Database,
+  accountIds: string[],
+  range: { from: string; to: string },
+) {
+  if (accountIds.length === 0) return [];
+  return bankTransactionQuery(db)
+    .where(
+      and(
+        visibleBankTransactionFilter,
+        lt(txn.amount, 0),
+        sql`${txn.accountId} IN (SELECT value FROM json_each(${JSON.stringify(accountIds)}))`,
+        sql`(${bankTransactionDay}) >= ${range.from}`,
+        sql`(${bankTransactionDay}) <= ${range.to}`,
+      ),
+    )
+    .all();
+}
+
 export async function listCreditCardBills(
   db: D1Database,
   limit: number,
@@ -308,4 +358,54 @@ export async function listCreditCardBillsInRange(
     )
     .orderBy(desc(bill.billingPeriod), asc(bill.accountId), asc(bill.id))
     .all();
+}
+
+/** 信用卡／貸款的銀行自動扣繳資料與使用者手動指定的扣款帳戶。 */
+export async function listPaymentAccountSources(db: D1Database) {
+  return createDrizzle(db)
+    .select({
+      id: account.id,
+      autopayStatus: sql<
+        "enabled" | "none" | null
+      >`${account.autopayStatus}`.as("autopayStatus"),
+      autopayBankCode: account.autopayBankCode,
+      autopayAccountLast4: account.autopayAccountLast4,
+      autopayAccountSourceId: account.autopayAccountSourceId,
+      overrideAccountId: paymentOverride.accountId,
+      overridePaymentAccountId: paymentOverride.paymentAccountId,
+    })
+    .from(account)
+    .leftJoin(paymentOverride, eq(paymentOverride.accountId, account.id))
+    .where(
+      and(
+        isNull(account.canonicalAccountId),
+        isNull(account.inactiveAt),
+        sql`${account.accountType} IN ('credit', 'loan')`,
+      ),
+    )
+    .all();
+}
+
+export async function savePaymentAccountOverride(
+  db: D1Database,
+  accountId: string,
+  paymentAccountId: string | null,
+  now: string,
+) {
+  await createDrizzle(db)
+    .insert(bankAccountPaymentAccounts)
+    .values({ accountId, paymentAccountId, createdAt: now, updatedAt: now })
+    .onConflictDoUpdate({
+      target: bankAccountPaymentAccounts.accountId,
+      set: { paymentAccountId, updatedAt: now },
+    });
+}
+
+export async function deletePaymentAccountOverride(
+  db: D1Database,
+  accountId: string,
+) {
+  await createDrizzle(db)
+    .delete(bankAccountPaymentAccounts)
+    .where(eq(bankAccountPaymentAccounts.accountId, accountId));
 }

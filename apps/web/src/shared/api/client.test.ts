@@ -1,79 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiRequestError, createApiClient } from "./client";
+import { createApiClient } from "./client";
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("API client", () => {
-  it("does not declare JSON when a POST request has no body", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await createApiClient().post("/api/connectors/sinopac/sync");
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/connectors/sinopac/sync",
-      expect.objectContaining({
-        method: "POST",
-        body: undefined,
-        headers: undefined,
-      }),
-    );
-  });
-
-  it("declares and serializes JSON when a request has a body", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ success: true }), {
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await createApiClient().post("/api/connectors/sinopac/sync", {
-      captcha: "123456",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/connectors/sinopac/sync",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ captcha: "123456" }),
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-  });
-
-  it("preserves structured API error codes", async () => {
+describe("API client 分頁", () => {
+  it("依 X-Next-Cursor 取完所有頁並依序合併", async () => {
+    const requested: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            success: false,
-            error: {
-              code: "TDCC_EMAIL_OTP_REQUIRED",
-              message: "驗證碼已寄出。",
-            },
-          }),
-          { status: 400 },
-        ),
-      ),
+      vi.fn(async (path: string) => {
+        requested.push(path);
+        const second = path.includes("cursor=");
+        return new Response(JSON.stringify(second ? [3] : [1, 2]), {
+          headers: second
+            ? { "X-Has-More": "false" }
+            : { "X-Has-More": "true", "X-Next-Cursor": "abc=" },
+        });
+      }),
     );
-
-    const error = await createApiClient()
-      .post("/api/connectors/tdcc/sync")
-      .catch((caught) => caught);
-
-    expect(error).toBeInstanceOf(ApiRequestError);
-    expect(error).toMatchObject({
-      code: "TDCC_EMAIL_OTP_REQUIRED",
-      message: "驗證碼已寄出。",
-      status: 400,
-    });
+    expect(
+      await createApiClient().getAllPages<number>("/api/investments"),
+    ).toEqual([1, 2, 3]);
+    expect(requested).toEqual([
+      "/api/investments",
+      "/api/investments?cursor=abc%3D",
+    ]);
   });
 });

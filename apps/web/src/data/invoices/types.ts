@@ -1,4 +1,6 @@
-import type { ConnectorId } from "@taiwan-fin-hub/core";
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
+
+export type { InvoiceTransactionPreference } from "@taiwan-fin-hub/shared";
 
 export interface InvoiceLineItemRow {
   id: string;
@@ -19,15 +21,10 @@ export interface InvoiceSummaryRow {
   invoiceNumber?: string;
   sellerName?: string;
   amount: number;
+  /** 純發票活動是否排除於收支計算；配對交易後不使用。 */
+  excludedFromCalculation?: boolean;
 }
 
 export interface InvoiceRow extends InvoiceSummaryRow {
   items: InvoiceLineItemRow[];
-}
-
-export interface InvoiceTransactionPreference {
-  invoiceId: string;
-  transactionId: string | null;
-  decision: "linked" | "separate";
-  updatedAt: string;
 }

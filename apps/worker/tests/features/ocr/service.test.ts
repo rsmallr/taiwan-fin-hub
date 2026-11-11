@@ -1,154 +1,90 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  recognizeAlphanumericCaptcha,
   recognizeNumericCaptcha,
-  recognizeValidateNumber,
-  VALIDATE_NUMBER_MODEL,
   ValidateNumberOcrError,
-  ValidateNumberOcrUnavailableError,
+  VALIDATE_NUMBER_MODEL,
 } from "../../../src/features/ocr/service";
 
-const image = new Uint8Array([1, 2, 3]).buffer;
+const imageBytes = new TextEncoder().encode("synthetic-captcha-image").buffer;
 
-describe("Gemma 4 validation number OCR", () => {
-  it("sends the original JPEG and accepts an exact six-digit response", async () => {
-    const run = vi.fn().mockResolvedValue({
-      choices: [{ message: { content: "575831" } }],
-    });
+function aiResponse(content: unknown, finishReason = "stop") {
+  return {
+    choices: [{ message: { content }, finish_reason: finishReason }],
+  };
+}
 
+describe("驗證碼辨識的安全診斷", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("保留純數字答案的前導零", async () => {
+    const run = vi.fn().mockResolvedValue(aiResponse("012345"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(
-      recognizeValidateNumber({ run } as unknown as Ai, image, "image/jpeg"),
-    ).resolves.toEqual({
-      number: "575831",
-      model: VALIDATE_NUMBER_MODEL,
-    });
-
-    expect(run).toHaveBeenCalledWith(
-      VALIDATE_NUMBER_MODEL,
-      expect.objectContaining({
-        messages: [
-          expect.objectContaining({
-            content: expect.arrayContaining([
-              expect.objectContaining({
-                type: "image_url",
-                image_url: { url: "data:image/jpeg;base64,AQID" },
-              }),
-            ]),
-          }),
-        ],
-        chat_template_kwargs: {
-          enable_thinking: false,
-          clear_thinking: true,
-        },
-        skip_special_tokens: true,
-        temperature: 0,
-        max_completion_tokens: 16,
-        stream: false,
-      }),
-    );
-  });
-
-  it("rejects prose or a non-six-digit answer", async () => {
-    const ai = {
-      run: vi.fn().mockResolvedValue({
-        choices: [{ message: { content: "The number is 575831." } }],
-      }),
-    } as unknown as Ai;
-
-    await expect(
-      recognizeValidateNumber(ai, image, "image/jpeg"),
-    ).rejects.toBeInstanceOf(ValidateNumberOcrError);
-  });
-
-  it("retries a Workers AI capacity error once and returns the recovered result", async () => {
-    const capacityError = Object.assign(new Error("AI unavailable"), {
-      internalCode: 3040,
-    });
-    const run = vi
-      .fn()
-      .mockRejectedValueOnce(capacityError)
-      .mockResolvedValueOnce({
-        choices: [{ message: { content: "575831" } }],
-      });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-
-    await expect(
-      recognizeValidateNumber({ run } as unknown as Ai, image, "image/jpeg"),
-    ).resolves.toMatchObject({ number: "575831" });
-
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(warn).toHaveBeenCalledOnce();
-    warn.mockRestore();
-  });
-
-  it("maps an exhausted Workers AI timeout to a localized unavailable error", async () => {
-    const run = vi.fn().mockRejectedValue(new Error("3046: Request timeout"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const error = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-
-    await expect(
-      recognizeValidateNumber({ run } as unknown as Ai, image, "image/jpeg"),
-    ).rejects.toEqual(
-      expect.objectContaining({
-        message: "驗證碼辨識服務暫時逾時，請稍後重試。",
-      }),
-    );
-
-    expect(run).toHaveBeenCalledTimes(2);
-    expect(error).toHaveBeenCalledWith(
-      "[ocr] Workers AI CAPTCHA recognition unavailable",
-      expect.any(Error),
-    );
-    warn.mockRestore();
-    error.mockRestore();
-  });
-
-  it("does not retry a non-transient Workers AI failure", async () => {
-    const run = vi.fn().mockRejectedValue(new Error("Invalid model input"));
-    const error = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
-
-    await expect(
-      recognizeValidateNumber({ run } as unknown as Ai, image, "image/jpeg"),
-    ).rejects.toBeInstanceOf(ValidateNumberOcrUnavailableError);
-
-    expect(run).toHaveBeenCalledOnce();
-    error.mockRestore();
-  });
-
-  it("supports a connector-specified numeric captcha length", async () => {
-    const run = vi.fn().mockResolvedValue({
-      choices: [{ message: { content: "3842" } }],
-    });
-
-    await expect(
-      recognizeNumericCaptcha({ run } as unknown as Ai, image, "image/jpeg", 4),
-    ).resolves.toMatchObject({ number: "3842" });
-
-    expect(JSON.stringify(run.mock.calls[0]?.[1])).toContain(
-      "exactly 4 digits",
-    );
-  });
-
-  it("accepts an exact case-sensitive alphanumeric CAPTCHA", async () => {
-    const run = vi.fn().mockResolvedValue({
-      choices: [{ message: { content: "A1b2" } }],
-    });
-
-    await expect(
-      recognizeAlphanumericCaptcha(
+      recognizeNumericCaptcha(
         { run } as unknown as Ai,
-        image,
-        "image/png",
-        4,
+        imageBytes,
+        "image/jpeg",
+        6,
       ),
-    ).resolves.toMatchObject({ code: "A1b2" });
+    ).resolves.toEqual({ number: "012345", model: VALIDATE_NUMBER_MODEL });
+    expect(warn).not.toHaveBeenCalled();
+  });
 
-    expect(JSON.stringify(run.mock.calls[0]?.[1])).toContain(
-      "case-sensitive ASCII letters or digits",
-    );
+  it.each([
+    {
+      response: { choices: [{ message: {} }] },
+      reason: "invalid_response",
+      outputLength: 0,
+      finishReason: "missing",
+    },
+    {
+      response: aiResponse(null),
+      reason: "empty_output",
+      outputLength: 0,
+      finishReason: "stop",
+    },
+    {
+      response: aiResponse("012", "length"),
+      reason: "truncated_output",
+      outputLength: 3,
+      finishReason: "length",
+    },
+    {
+      response: aiResponse("01234", "synthetic-private-finish-reason"),
+      reason: "wrong_length",
+      outputLength: 5,
+      finishReason: "unknown",
+    },
+    {
+      response: aiResponse("驗證碼是012345"),
+      reason: "unexpected_characters",
+      outputLength: 10,
+      finishReason: "stop",
+    },
+  ])("拒絕 $reason 且診斷不包含答案或圖片內容", async (testCase) => {
+    const run = vi.fn().mockResolvedValue(testCase.response);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      recognizeNumericCaptcha(
+        { run } as unknown as Ai,
+        imageBytes,
+        "image/jpeg",
+        6,
+      ),
+    ).rejects.toBeInstanceOf(ValidateNumberOcrError);
+    expect(warn).toHaveBeenCalledOnce();
+    const log = String(warn.mock.calls[0]![0]);
+    expect(JSON.parse(log)).toEqual({
+      event: "captcha_ocr_failed",
+      model: VALIDATE_NUMBER_MODEL,
+      reason: testCase.reason,
+      expectedLength: 6,
+      outputLength: testCase.outputLength,
+      finishReason: testCase.finishReason,
+      imageByteLength: imageBytes.byteLength,
+      elapsedMs: expect.any(Number),
+    });
+    expect(log).not.toMatch(/012345|01234|synthetic-private|synthetic-captcha/);
+    expect(log).not.toContain(btoa("synthetic-captcha-image"));
   });
 });

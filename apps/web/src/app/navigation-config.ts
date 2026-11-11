@@ -1,6 +1,6 @@
 import { BarChart3, History, Settings, Wallet } from "@lucide/svelte";
 import type { Component } from "svelte";
-import type { DetailView, MobileSettingsView, PrimaryView } from "./types";
+import type { MobileSettingsView, PrimaryView } from "./types";
 
 export interface NavigationItem {
   view: PrimaryView;
@@ -49,17 +49,6 @@ export const mobilePrimaryViews: PrimaryView[] = [
   "activity",
 ];
 
-export const detailLabels: Record<
-  DetailView,
-  { label: string; description: string }
-> = {
-  investments: { label: "投資", description: "投資持倉與交易紀錄。" },
-  "manual-assets": {
-    label: "其他資產",
-    description: "保險、不動產、交通工具與估值紀錄。",
-  },
-};
-
 export const mobileSettingsLabels: Record<
   MobileSettingsView,
   { label: string; description: string }
@@ -77,7 +66,11 @@ export const mobileSettingsLabels: Record<
     description: "查看資產換算使用的參考匯率。",
   },
   "classification-rules": {
-    label: "分類規則",
-    description: "讓銀行交易依條件自動分類。",
+    label: "分類",
+    description: "以規則與 AI 自動分類銀行交易。",
+  },
+  about: {
+    label: "關於",
+    description: "切換外觀主題，並查看上游版本的 Commit、分支與本次組建時間。",
   },
 };

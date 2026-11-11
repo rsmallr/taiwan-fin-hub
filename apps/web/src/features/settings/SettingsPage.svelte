@@ -1,76 +1,86 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
+  import { Plus } from "@lucide/svelte";
   import type { ApiClient } from "@/shared/api/client";
   import type { MobileSettingsView, View } from "@/app/types";
   import { exchangeRatesQuery } from "@/data/assets/queries";
-  import { bankQuery } from "@/data/bank/queries";
   import { classificationRulesQuery } from "@/data/classification/queries";
-  import {
-    connectorDefinitions,
-    connectorFields,
-  } from "@/data/connectors/definitions";
+  import { connectorList } from "@taiwan-fin-hub/shared";
   import { syncJobsQuery } from "@/data/connectors/queries";
   import {
     getActionableSyncJobs,
     getConfiguredSyncJobs,
     getHealthySyncJobs,
     getPendingSyncJobs,
+    getSyncSourceStatus,
   } from "@/data/connectors/sync-status";
   import { notificationConfigQuery } from "@/data/notifications/queries";
   import type { ConnectorId } from "@/data/connectors/types";
   import { formatDateTime } from "@/shared/format/financial";
+  import Button from "@/shared/ui/Button.svelte";
+  import AboutPanel from "./components/AboutPanel.svelte";
+  import AppearancePanel from "./components/AppearancePanel.svelte";
   import ClassificationRulesPanel from "./components/ClassificationRulesPanel.svelte";
+  import AiClassificationPanel from "./components/AiClassificationPanel.svelte";
   import DefaultSchedulePanel from "./components/DefaultSchedulePanel.svelte";
   import ExchangeRatesPanel from "./components/ExchangeRatesPanel.svelte";
   import MobileMore from "./components/MobileMore.svelte";
   import NotificationPanel from "./components/NotificationPanel.svelte";
-  import SourceCard from "./components/SourceCard.svelte";
+  import AddSourceDialog from "./components/AddSourceDialog.svelte";
+  import SourceRow from "./components/SourceRow.svelte";
   import ConnectorPanel from "./connectors/ConnectorPanel.svelte";
+  import { formatSyncSchedule } from "./model/schedule";
+  import {
+    groupSourcesByStatus,
+    sourceCapabilitySummary,
+  } from "./model/sources";
   let {
     api,
     demoMode,
     connectorTarget,
     mobileView,
     navigate,
+    addSourceOpen = $bindable(false),
+    addSourcePreview = false,
   }: {
     api: ApiClient;
     demoMode: boolean;
     connectorTarget?: ConnectorId | null;
     mobileView?: MobileSettingsView | "more";
-    navigate: (view: View) => void;
+    navigate: (
+      view: View,
+      targetConnector?: ConnectorId,
+      options?: { fromAddSource?: boolean },
+    ) => void;
+    /** 「新增資料來源」面板是否開啟；由 App 管理，從面板選入的連接器返回時可重新打開。 */
+    addSourceOpen?: boolean;
+    /** 只顯示新增面板的靜態畫面，供手機跟手返回時當作底層頁面。 */
+    addSourcePreview?: boolean;
   } = $props();
-  const sources = connectorDefinitions;
-  const weekdayLabels = [
-    "週日",
-    "週一",
-    "週二",
-    "週三",
-    "週四",
-    "週五",
-    "週六",
-  ];
+  const sources = connectorList;
   const settingTabs = [
     { view: "settings" as const, label: "總覽" },
     { view: "data-sources" as const, label: "資料來源" },
     { view: "sync-notifications" as const, label: "同步與通知" },
     { view: "exchange-rates" as const, label: "匯率" },
-    { view: "classification-rules" as const, label: "分類規則" },
+    { view: "classification-rules" as const, label: "分類" },
+    { view: "about" as const, label: "關於" },
   ];
-  const jobs = createQuery(syncJobsQuery(() => api));
-  const rules = createQuery(classificationRulesQuery(() => api));
-  const bank = createQuery(bankQuery(() => api));
-  const rates = createQuery(exchangeRatesQuery(() => api));
-  const notifications = createQuery(notificationConfigQuery(() => api));
-  let selectedConnector = $state<ConnectorId | null | undefined>(undefined);
-  const activeConnector = $derived(
-    selectedConnector === undefined
-      ? (connectorTarget ?? null)
-      : selectedConnector,
-  );
+  const jobs = createQuery(() => syncJobsQuery(() => api));
+  const rules = createQuery(() => classificationRulesQuery(() => api));
+  const rates = createQuery(() => exchangeRatesQuery(() => api));
+  const notifications = createQuery(() => notificationConfigQuery(() => api));
+  // 選取的來源由 App 管理，手機版頂部返回鍵才能從詳情回到清單。
+  const activeConnector = $derived(connectorTarget ?? null);
   const syncJobsState = $derived(
-    $jobs.isPending ? "loading" : $jobs.isError ? "error" : "ready",
+    jobs.isPending ? "loading" : jobs.isError ? "error" : "ready",
   );
-  const syncJobRows = $derived($jobs.data ?? []);
+  const syncJobRows = $derived(jobs.data ?? []);
+  const sourceGroups = $derived(groupSourcesByStatus(sources, syncJobRows));
+  const linkedSources = $derived(
+    sources.filter((source) => !sourceGroups.available.includes(source)),
+  );
   const needsActionJobs = $derived(getActionableSyncJobs(syncJobRows));
   const pendingSyncJobs = $derived(getPendingSyncJobs(syncJobRows));
   const configuredSources = $derived(getConfiguredSyncJobs(syncJobRows));
@@ -82,7 +92,7 @@
     sources.find((source) => source.id === actionJob?.connectorId),
   );
   const latestSuccessAt = $derived(
-    ($jobs.data ?? []).reduce<string | undefined>((latest, job) => {
+    (jobs.data ?? []).reduce<string | undefined>((latest, job) => {
       if (!job.lastSuccessAt) return latest;
       return !latest || job.lastSuccessAt > latest ? job.lastSuccessAt : latest;
     }, undefined),
@@ -98,41 +108,33 @@
     ).length,
   );
   const scheduleSummary = $derived(
-    !inheritedJob
-      ? "尚未設定"
-      : inheritedJob.intervalMinutes === 1440
-        ? `每天 ${inheritedJob.preferredTime}`
-        : inheritedJob.intervalMinutes === 10080
-          ? `每${weekdayLabels[inheritedJob.preferredWeekday] ?? "週一"} ${inheritedJob.preferredTime}`
-          : `每 ${inheritedJob.intervalMinutes / 60} 小時`,
+    !inheritedJob ? "尚未設定" : formatSyncSchedule(inheritedJob),
   );
   const ratesSummary = $derived(
-    ($rates.data ?? [])
+    (rates.data ?? [])
       .map((rate) => `${rate.currency} ${rate.rateTwd.toFixed(2)}`)
       .join(" · ") || "尚未設定",
   );
   const notificationSummary = $derived(
-    $notifications.isPending
+    notifications.isPending
       ? "載入中…"
-      : $notifications.data?.enabled
+      : notifications.data?.enabled
         ? "已開啟"
         : "未啟用",
   );
   const notificationDescription = $derived(
-    $notifications.data?.enabled
-      ? "失敗與重新驗證時通知"
-      : "前往同步與通知開啟",
+    notifications.data?.enabled ? "失敗與重新驗證時通知" : "前往同步與通知開啟",
   );
   const customRuleCount = $derived(
-    ($rules.data ?? []).filter((rule) => !rule.isSystem).length,
+    (rules.data ?? []).filter((rule) => !rule.isSystem).length,
   );
   const rulesSummary = $derived(
-    $rules.isPending
+    rules.isPending
       ? "載入中…"
       : `${customRuleCount} 條自訂規則 · 含自動分類與配對`,
   );
   const enabledRuleCount = $derived(
-    ($rules.data ?? []).filter((rule) => !rule.isSystem && rule.enabled).length,
+    (rules.data ?? []).filter((rule) => !rule.isSystem && rule.enabled).length,
   );
   const recentJobs = $derived(getConfiguredSyncJobs(syncJobRows));
   const recentSuccessCount = $derived(
@@ -145,40 +147,28 @@
     }, undefined),
   );
   function selectConnector(id: ConnectorId) {
-    selectedConnector = activeConnector === id ? null : id;
+    navigate("data-sources", activeConnector === id ? undefined : id);
   }
 
   function openConnector(id: ConnectorId) {
-    selectedConnector = id;
-    navigate("data-sources");
+    navigate("data-sources", id);
   }
 
-  function scrollSelectedConnector(node: HTMLElement, selected: boolean) {
-    let firstFrame: number | undefined;
-    let secondFrame: number | undefined;
+  function pickNewSource(id: ConnectorId) {
+    addSourceOpen = false;
+    navigate("data-sources", id, { fromAddSource: true });
+  }
 
-    function cancelScheduledScroll() {
-      if (firstFrame !== undefined) cancelAnimationFrame(firstFrame);
-      if (secondFrame !== undefined) cancelAnimationFrame(secondFrame);
-      firstFrame = undefined;
-      secondFrame = undefined;
-    }
-
-    function scheduleScroll(active: boolean) {
-      cancelScheduledScroll();
-      if (!active) return;
-      firstFrame = requestAnimationFrame(() => {
-        secondFrame = requestAnimationFrame(() => {
-          node.scrollIntoView({ behavior: "smooth", block: "start" });
-        });
-      });
-    }
-
-    scheduleScroll(selected);
-    return {
-      update: scheduleScroll,
-      destroy: cancelScheduledScroll,
-    };
+  let desktopDetailHeading = $state<HTMLElement>();
+  async function focusConnectorDetail() {
+    await tick();
+    // 桌面聚焦詳情面板標題；手機版的連接器名稱在 App 頁首，改聚焦頁首標題。
+    [
+      desktopDetailHeading,
+      document.querySelector<HTMLElement>("header [data-page-title]"),
+    ]
+      .find((heading) => heading?.offsetParent)
+      ?.focus();
   }
 
   function isActiveTab(tabView: (typeof settingTabs)[number]["view"]) {
@@ -188,7 +178,7 @@
   }
 </script>
 
-<div class="grid min-w-0 gap-5">
+<div class={addSourcePreview ? "hidden" : "grid min-w-0 gap-5"}>
   <nav
     aria-label="設定分類"
     class="no-scrollbar hidden overflow-x-auto border-b border-border bg-card md:flex md:gap-1 md:px-1"
@@ -205,50 +195,117 @@
   {#if mobileView === "more"}
     <MobileMore
       {demoMode}
-      jobs={$jobs.data ?? []}
-      jobsLoading={$jobs.isPending}
-      jobsError={$jobs.isError}
-      rules={$rules.data ?? []}
-      bank={$bank.data ?? { accounts: [], transactions: [] }}
+      jobs={jobs.data ?? []}
+      jobsLoading={jobs.isPending}
+      jobsError={jobs.isError}
+      rules={rules.data ?? []}
       {navigate}
       {api}
       {openConnector}
     />
+  {:else if mobileView === "about"}
+    <div class="grid min-w-0 gap-4">
+      <h2 class="hidden text-2xl font-bold tracking-tight md:block">關於</h2>
+      <AppearancePanel />
+      <AboutPanel />
+    </div>
   {:else if mobileView === "data-sources"}
     <div class="grid min-w-0 gap-4">
-      <section aria-label="資料來源頁標題" class="hidden min-w-0 md:block">
+      <section
+        aria-label="資料來源頁標題"
+        class={`min-w-0 flex-wrap items-center justify-between gap-3 pt-3 md:items-end md:pt-0 ${activeConnector ? "hidden md:flex" : "flex"}`}
+      >
         <div>
-          <h2 class="text-2xl font-bold tracking-tight">資料來源與連接器</h2>
-          <p class="mt-1 text-sm text-muted-foreground">
-            管理連線、驗證狀態與最近同步結果。
+          <h2 class="hidden text-2xl font-bold tracking-tight md:block">
+            資料來源與連接器
+          </h2>
+          <p class="text-sm text-muted-foreground md:mt-1">
+            {#if syncJobsState === "loading"}
+              正在讀取資料來源狀態…
+            {:else if syncJobsState === "error"}
+              無法取得資料來源狀態，請稍後再試。
+            {:else}
+              {linkedSources.length} 個已連接 · {sourceGroups.actionable.length}
+              個需要處理
+            {/if}
           </p>
         </div>
+        <Button
+          size="sm"
+          disabled={syncJobsState !== "ready"}
+          onclick={() => (addSourceOpen = true)}
+          ><Plus class="size-4" />新增資料來源</Button
+        >
       </section>
 
       <div
-        class="hidden gap-4 md:grid lg:grid-cols-[minmax(0,620px)_minmax(0,1fr)]"
+        class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,560px)_minmax(0,1fr)]"
       >
         <section
           aria-label="資料來源清單"
-          class="grid min-w-0 content-start gap-3"
+          class={`min-w-0 content-start ${activeConnector ? "hidden md:grid" : "grid"}`}
         >
-          {#each sources as source (source.id)}
-            <SourceCard
-              {api}
-              {...source}
-              id={source.id}
-              jobs={$jobs.data ?? []}
-              compact
-              compactCard
-              selected={activeConnector === source.id}
-              onConfigure={() => selectConnector(source.id)}
-            />
-          {/each}
+          {#if syncJobsState === "ready" && linkedSources.length === 0}
+            <div
+              class="rounded-xl border border-dashed border-border bg-card p-6 text-center"
+            >
+              <p class="font-semibold">尚未連接任何資料來源</p>
+              <p class="mt-1 text-sm text-muted-foreground">
+                選擇銀行、電子發票或集保，輸入登入資訊後即可開始同步。
+              </p>
+              <Button
+                class="mt-4"
+                size="sm"
+                onclick={() => (addSourceOpen = true)}
+                ><Plus class="size-4" />新增資料來源</Button
+              >
+            </div>
+          {:else if syncJobsState === "ready"}
+            <div
+              class="overflow-hidden rounded-xl border border-border bg-card shadow-xs"
+            >
+              {#if sourceGroups.actionable.length}
+                <h3
+                  class="flex justify-between px-4 pb-2 pt-3 text-sm font-semibold text-coral"
+                >
+                  <span>需要處理</span><span
+                    >{sourceGroups.actionable.length}</span
+                  >
+                </h3>
+                {#each sourceGroups.actionable as source (source.id)}
+                  <SourceRow
+                    id={source.id}
+                    title={source.title}
+                    job={sourceGroups.jobById.get(source.id)}
+                    selected={activeConnector === source.id}
+                    onSelect={() => selectConnector(source.id)}
+                  />
+                {/each}
+              {/if}
+              {#if sourceGroups.connected.length}
+                <h3
+                  class={`flex justify-between px-4 pb-2 pt-3 text-sm font-semibold text-muted-foreground ${sourceGroups.actionable.length ? "border-t border-border" : ""}`}
+                >
+                  <span>已連接</span><span>{sourceGroups.connected.length}</span
+                  >
+                </h3>
+                {#each sourceGroups.connected as source (source.id)}
+                  <SourceRow
+                    id={source.id}
+                    title={source.title}
+                    job={sourceGroups.jobById.get(source.id)}
+                    selected={activeConnector === source.id}
+                    onSelect={() => selectConnector(source.id)}
+                  />
+                {/each}
+              {/if}
+            </div>
+          {/if}
         </section>
 
         <section
           aria-label="連接器詳情"
-          class="min-h-[520px] min-w-0 rounded-xl border border-border bg-card p-5 shadow-xs"
+          class="hidden min-h-[520px] min-w-0 rounded-xl border border-border bg-card p-5 shadow-xs md:block"
         >
           {#if activeConnector}
             {@const selectedSource = sources.find(
@@ -256,14 +313,20 @@
             )}
             <div class="mb-4 flex items-start justify-between gap-3">
               <div>
-                <h2 class="text-lg font-bold">{selectedSource?.title}</h2>
+                <h2
+                  bind:this={desktopDetailHeading}
+                  class="text-lg font-bold outline-none"
+                  tabindex="-1"
+                >
+                  {selectedSource?.title}
+                </h2>
                 <p class="mt-1 text-sm text-muted-foreground">
-                  {selectedSource?.description}
+                  {selectedSource && sourceCapabilitySummary(selectedSource)}
                 </p>
               </div>
               <button
                 class="text-sm font-semibold text-muted-foreground hover:text-foreground"
-                onclick={() => (selectedConnector = null)}>關閉</button
+                onclick={() => navigate("data-sources")}>關閉</button
               >
             </div>
             {#key activeConnector}<ConnectorPanel
@@ -271,13 +334,12 @@
                 connectorId={activeConnector}
                 {demoMode}
                 title={selectedSource?.title ?? "連接器"}
-                fields={connectorFields[activeConnector]}
                 embedded
               />{/key}
           {:else}
             <div class="grid min-h-[480px] place-items-center text-center">
               <div>
-                <p class="text-base font-semibold">選擇一個連接器</p>
+                <p class="text-base font-semibold">選擇一個資料來源</p>
                 <p class="mt-1 text-sm text-muted-foreground">
                   查看連線狀態、同步範圍與驗證設定。
                 </p>
@@ -285,40 +347,34 @@
             </div>
           {/if}
         </section>
-      </div>
 
-      <section
-        aria-label="資料來源與連接器"
-        class="grid min-w-0 gap-3 sm:grid-cols-2 md:hidden"
-      >
-        {#each sources as source (source.id)}
-          <div
-            class={`min-w-0 scroll-mt-24 ${activeConnector === source.id ? "sm:col-span-2" : ""}`}
-            data-connector-settings={source.id}
-            use:scrollSelectedConnector={activeConnector === source.id}
+        {#if activeConnector}
+          {@const mobileSource = sources.find(
+            (source) => source.id === activeConnector,
+          )}
+          <section
+            aria-label="連接器設定"
+            class="grid min-w-0 gap-4 pt-3 md:hidden"
+            data-connector-settings={activeConnector}
           >
-            <SourceCard
-              {api}
-              {...source}
-              id={source.id}
-              jobs={$jobs.data ?? []}
-              selected={activeConnector === source.id}
-              onConfigure={() => selectConnector(source.id)}
+            <!-- 連接器名稱在 App 頁首；能力摘要比照清單頁，放在頁首下方當副標。 -->
+            <p class="text-sm text-muted-foreground">
+              {mobileSource && sourceCapabilitySummary(mobileSource)}
+            </p>
+            <div
+              class="min-w-0 rounded-xl border border-border bg-card p-4 shadow-xs"
             >
-              {#if activeConnector === source.id}
-                {#key source.id}<ConnectorPanel
-                    {api}
-                    connectorId={source.id}
-                    {demoMode}
-                    title={source.title}
-                    fields={connectorFields[source.id]}
-                    embedded
-                  />{/key}
-              {/if}
-            </SourceCard>
-          </div>
-        {/each}
-      </section>
+              {#key activeConnector}<ConnectorPanel
+                  {api}
+                  connectorId={activeConnector}
+                  {demoMode}
+                  title={mobileSource?.title ?? "連接器"}
+                  embedded
+                />{/key}
+            </div>
+          </section>
+        {/if}
+      </div>
     </div>
   {:else if mobileView === "sync-notifications"}
     <div class="grid min-w-0 gap-4">
@@ -335,7 +391,7 @@
         <DefaultSchedulePanel
           {api}
           {demoMode}
-          jobs={$jobs.data ?? []}
+          jobs={jobs.data ?? []}
           variant="desktop"
         />
         <NotificationPanel {api} {demoMode} variant="desktop" />
@@ -369,7 +425,7 @@
       </section>
 
       <div class="grid min-w-0 gap-4 md:hidden">
-        <DefaultSchedulePanel {api} {demoMode} jobs={$jobs.data ?? []} />
+        <DefaultSchedulePanel {api} {demoMode} jobs={jobs.data ?? []} />
         <NotificationPanel {api} {demoMode} />
       </div>
     </div>
@@ -400,8 +456,11 @@
         </div>
         <div class="rounded-xl bg-muted p-4">
           <p class="text-sm font-semibold text-muted-foreground">支援幣別</p>
-          <p class="mt-2 text-lg font-bold">{$rates.data?.length ?? 0} 筆</p>
-          <p class="mt-1 text-sm font-semibold text-steel">USD · JPY · EUR</p>
+          <p class="mt-2 text-lg font-bold">{rates.data?.length ?? 0} 筆</p>
+          <p class="mt-1 text-sm font-semibold text-steel">
+            {(rates.data ?? []).map((rate) => rate.currency).join(" · ") ||
+              "尚未取得"}
+          </p>
         </div>
       </section>
 
@@ -421,9 +480,10 @@
     <div class="grid min-w-0 gap-4">
       <div class="hidden items-center justify-between gap-4 md:flex">
         <div>
-          <h2 class="text-2xl font-bold tracking-tight">分類規則</h2>
+          <h2 class="text-2xl font-bold tracking-tight">分類</h2>
           <p class="mt-1 text-sm text-muted-foreground">
-            管理自訂分類，也會自動處理帳戶互轉、信用卡年費減免與發票配對。
+            管理自訂規則與 AI
+            自動分類，也會自動處理帳戶互轉、信用卡年費減免與發票配對。
           </p>
         </div>
       </div>
@@ -445,7 +505,10 @@
       <div
         class="hidden gap-4 md:grid lg:grid-cols-[minmax(0,690px)_minmax(0,1fr)]"
       >
-        <ClassificationRulesPanel {api} />
+        <div class="grid min-w-0 content-start gap-4">
+          <AiClassificationPanel {api} {demoMode} />
+          <ClassificationRulesPanel {api} />
+        </div>
         <aside
           class="min-w-0 rounded-xl border border-border bg-card p-5 shadow-xs"
           aria-label="規則如何運作"
@@ -463,9 +526,14 @@
           <p class="mt-5 text-sm leading-relaxed text-muted-foreground">
             儲存規則後，交易資料重新載入時會依目前順序重新判定；已手動分類的交易仍以手動覆寫為準。
           </p>
+          <p class="mt-3 text-sm leading-relaxed text-muted-foreground">
+            規則都不符合時，若已啟用 AI 自動分類，會交由 AI
+            判斷；手動分類與規則仍優先。
+          </p>
         </aside>
       </div>
-      <div class="w-full min-w-0 md:hidden">
+      <div class="grid w-full min-w-0 gap-4 md:hidden">
+        <AiClassificationPanel {api} {demoMode} />
         <ClassificationRulesPanel {api} />
       </div>
     </div>
@@ -564,7 +632,10 @@
           {#if syncJobsState === "ready"}
             <button
               class="mt-4 rounded-lg bg-steel px-3.5 py-2 text-sm font-semibold text-white transition hover:bg-steel/90"
-              onclick={() => navigate("data-sources")}
+              onclick={() =>
+                actionSource
+                  ? openConnector(actionSource.id)
+                  : navigate("data-sources")}
               >{needsAction ? "查看連接器" : "管理資料來源"}</button
             >
           {/if}
@@ -614,27 +685,72 @@
           class="min-w-0 rounded-xl border border-border bg-card p-[18px] shadow-xs"
         >
           <div class="flex items-center justify-between gap-3">
-            <h2 class="text-lg font-bold">資料來源與連接器</h2>
+            <h2 class="text-lg font-bold">
+              {sourceGroups.actionable.length ? "需要注意" : "資料來源與連接器"}
+            </h2>
             <button
               class="text-sm font-semibold text-steel transition hover:text-steel/80"
               onclick={() => navigate("data-sources")}>管理全部 →</button
             >
           </div>
-          <div class="mt-2">
-            {#each sources as source (source.id)}
-              <SourceCard
-                {api}
-                {...source}
-                id={source.id}
-                jobs={$jobs.data ?? []}
-                compact
-                selected={false}
-                onConfigure={() => openConnector(source.id)}
-              />
-            {/each}
-          </div>
+          {#if syncJobsState === "loading"}
+            <p class="mt-3 text-sm text-muted-foreground">
+              正在讀取資料來源狀態…
+            </p>
+          {:else if syncJobsState === "error"}
+            <p class="mt-3 text-sm text-coral">無法取得資料來源狀態。</p>
+          {:else}
+            {#if sourceGroups.actionable.length}
+              <div class="-mx-[18px] mt-3 border-b border-border">
+                {#each sourceGroups.actionable as source (source.id)}
+                  <SourceRow
+                    id={source.id}
+                    title={source.title}
+                    job={sourceGroups.jobById.get(source.id)}
+                    onSelect={() => openConnector(source.id)}
+                  />
+                {/each}
+              </div>
+            {:else}
+              <p class="mt-2 text-sm text-muted-foreground">
+                {linkedSources.length
+                  ? "所有已連接來源都沒有需要處理的問題。"
+                  : "尚未連接資料來源，新增後即可開始同步。"}
+              </p>
+            {/if}
+            <div class="mt-4">
+              {#if linkedSources.length}
+                <p class="text-sm text-muted-foreground">
+                  已連接 {linkedSources.length} 個來源
+                </p>
+              {/if}
+              <div class="mt-2 flex flex-wrap gap-2">
+                {#each linkedSources as source (source.id)}
+                  {@const status = getSyncSourceStatus(
+                    sourceGroups.jobById.get(source.id),
+                  )}
+                  <button
+                    type="button"
+                    class="inline-flex min-h-9 items-center gap-2 rounded-full border border-border bg-muted/40 px-3 text-sm font-medium transition hover:border-steel/50"
+                    onclick={() => openConnector(source.id)}
+                    ><span
+                      aria-hidden="true"
+                      class={`size-2 rounded-full ${status === "needs_action" ? "bg-coral" : status === "healthy" ? "bg-moss" : "bg-amber-500"}`}
+                    ></span>{source.title}</button
+                  >
+                {/each}
+                <button
+                  type="button"
+                  class="inline-flex min-h-9 items-center gap-1.5 rounded-full border border-dashed border-border px-3 text-sm font-medium text-steel transition hover:border-steel/50"
+                  onclick={() => {
+                    addSourceOpen = true;
+                    navigate("data-sources");
+                  }}><Plus class="size-4" />新增</button
+                >
+              </div>
+            </div>
+          {/if}
         </div>
-
         <div class="grid min-w-0 gap-3">
           <button
             type="button"
@@ -688,7 +804,7 @@
           class="min-w-0 rounded-xl border border-border bg-card p-[15px] text-left shadow-xs transition hover:-translate-y-0.5 hover:border-ink/20 hover:shadow-sm"
           onclick={() => navigate("classification-rules")}
         >
-          <h2 class="text-base font-bold">分類規則</h2>
+          <h2 class="text-base font-bold">分類</h2>
           <p class="mt-1 text-sm text-muted-foreground">{rulesSummary}</p>
           <span class="mt-3 block text-sm font-semibold text-steel"
             >開啟設定 →</span
@@ -698,3 +814,12 @@
     </div>
   {/if}
 </div>
+
+<AddSourceDialog
+  bind:open={addSourceOpen}
+  sources={sourceGroups.available}
+  connectedCount={linkedSources.length}
+  onSelect={pickNewSource}
+  onSelectedClose={focusConnectorDetail}
+  preview={addSourcePreview}
+/>

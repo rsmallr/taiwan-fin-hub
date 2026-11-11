@@ -1,18 +1,21 @@
 <script lang="ts">
-  import { Clock3, Database, Settings, WalletCards } from "@lucide/svelte";
+  import {
+    Clock3,
+    Database,
+    Info,
+    Settings,
+    WalletCards,
+  } from "@lucide/svelte";
   import Card from "@/shared/ui/Card.svelte";
   import CardContent from "@/shared/ui/CardContent.svelte";
   import type { ApiClient } from "@/shared/api/client";
   import type { View } from "@/app/types";
-  import type { BankData } from "@/data/bank/types";
   import type { ClassificationRuleRow } from "@/data/classification/types";
-  import { connectorDefinitions } from "@/data/connectors/definitions";
+  import { connectorList } from "@taiwan-fin-hub/shared";
   import {
     getActionableSyncJobs,
     getHealthySyncJobs,
     getPendingSyncJobs,
-    getSyncSourceStatus,
-    getSyncSourceStatusLabel,
   } from "@/data/connectors/sync-status";
   import type { ConnectorId, SyncJobRow } from "@/data/connectors/types";
   let {
@@ -21,7 +24,6 @@
     jobsLoading = false,
     jobsError = false,
     rules,
-    bank,
     navigate,
     openConnector,
   }: {
@@ -31,11 +33,10 @@
     jobsLoading?: boolean;
     jobsError?: boolean;
     rules: ClassificationRuleRow[];
-    bank: BankData;
     navigate: (view: View) => void;
     openConnector: (id: ConnectorId) => void;
   } = $props();
-  const sources = connectorDefinitions;
+  const sources = connectorList;
   const configuredSources = $derived(
     jobs.filter((job) => job.configured && job.scope === "all"),
   );
@@ -45,6 +46,11 @@
   const unhealthy = $derived(getActionableSyncJobs(jobs));
   const healthy = $derived(getHealthySyncJobs(jobs));
   const pending = $derived(getPendingSyncJobs(jobs));
+  const actionableSources = $derived(
+    sources.filter((source) =>
+      unhealthy.some((job) => job.connectorId === source.id),
+    ),
+  );
 </script>
 
 <div class="grid gap-4">
@@ -94,7 +100,7 @@
               class="block text-sm text-ink/45">狀態、憑證、排程與重新驗證</span
             ></span
           ><span class="text-sm font-semibold text-steel"
-            >{sources.length} 個　›</span
+            >{configuredSources.length} 個　›</span
           ></button
         >
         <button
@@ -128,47 +134,54 @@
             class="flex size-10 items-center justify-center rounded-xl bg-steel/10 text-steel"
             ><Settings class="size-5" /></span
           ><span class="flex-1"
-            ><span class="block font-semibold">分類規則</span><span
-              class="block text-sm text-ink/45">自訂分類與自動配對</span
+            ><span class="block font-semibold">分類</span><span
+              class="block text-sm text-ink/45">自訂規則、AI 與自動配對</span
             ></span
           ><span class="text-sm font-semibold text-steel"
             >{customRuleCount} 條自訂　›</span
           ></button
         >
+        <button
+          type="button"
+          class="flex min-h-16 w-full items-center gap-3 px-4 py-3 text-left"
+          onclick={() => navigate("about")}
+          ><span
+            class="flex size-10 items-center justify-center rounded-xl bg-steel/10 text-steel"
+            ><Info class="size-5" /></span
+          ><span class="flex-1"
+            ><span class="block font-semibold">關於</span><span
+              class="block text-sm text-ink/45"
+              >外觀主題、Commit 與組建時間</span
+            ></span
+          ><span class="text-sm font-semibold text-steel">›</span></button
+        >
       </div></Card
     >
   </section>
-  <section>
-    <div class="mb-2 flex items-center justify-between">
-      <h2 class="text-base font-semibold text-ink/50">資料來源</h2>
-      <button
-        class="min-h-8 px-2 text-sm font-semibold text-steel"
-        onclick={() => navigate("data-sources")}>管理</button
-      >
-    </div>
-    <Card
-      ><div class="divide-y divide-ink/8">
-        {#each sources as source (source.id)}{@const job = jobs.find(
-            (item) => item.connectorId === source.id,
-          )}
-          <button
-            type="button"
-            class="flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition hover:bg-paper focus-visible:outline-2 focus-visible:outline-steel"
-            aria-label={`管理${source.title}`}
-            onclick={() => openConnector(source.id)}
-          >
-            <span class="font-semibold">{source.title}</span><span
-              class={getSyncSourceStatus(job) === "needs_action"
-                ? "text-coral"
-                : getSyncSourceStatus(job) === "not_synced"
-                  ? "text-amber-700"
-                  : getSyncSourceStatus(job) === "healthy"
-                    ? "text-moss"
-                    : "text-ink/45"}
-              >{getSyncSourceStatusLabel(getSyncSourceStatus(job))}</span
+  {#if actionableSources.length}
+    <section>
+      <div class="mb-2 flex items-center justify-between">
+        <h2 class="text-base font-semibold text-coral">需要處理</h2>
+        <button
+          class="min-h-8 px-2 text-sm font-semibold text-steel"
+          onclick={() => navigate("data-sources")}>全部來源</button
+        >
+      </div>
+      <Card
+        ><div class="divide-y divide-ink/8">
+          {#each actionableSources as source (source.id)}
+            <button
+              type="button"
+              class="flex min-h-12 w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm transition hover:bg-paper focus-visible:outline-2 focus-visible:outline-steel"
+              aria-label={`管理${source.title}`}
+              onclick={() => openConnector(source.id)}
             >
-          </button>{/each}
-      </div></Card
-    >
-  </section>
+              <span class="font-semibold">{source.title}</span><span
+                class="text-coral">需要處理 ›</span
+              >
+            </button>{/each}
+        </div></Card
+      >
+    </section>
+  {/if}
 </div>

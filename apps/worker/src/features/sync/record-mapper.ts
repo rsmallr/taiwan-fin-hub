@@ -1,15 +1,15 @@
+import type { ConnectorId } from "@taiwan-fin-hub/shared";
 import type {
   BankAccount,
   BankBalanceSnapshot,
   BankTransaction,
-  ConnectorId,
   CreditCardBill,
   InvestmentPosition,
   InvestmentTransaction,
   Invoice,
   InvoiceLineItem,
   NetWorthHistoryPoint,
-} from "@taiwan-fin-hub/core";
+} from "../../sources/financial-types";
 import { deriveBankMatchKey } from "../bank/display";
 import type { SyncWriteRecord } from "./persistence";
 
@@ -76,6 +76,7 @@ export function bankAccountRecord(
 ): SyncWriteRecord {
   const { bankCode, last4 } = deriveBankMatchKey(connectorId, account.sourceId);
   const id = stableId(connectorId, account.sourceId);
+  const autopay = account.autopayAccount;
   return {
     entityType: "bank_account",
     recordKey: id,
@@ -86,13 +87,20 @@ export function bankAccountRecord(
       institution_name: account.institutionName ?? null,
       account_name: account.accountName ?? null,
       account_type: account.accountType ?? null,
-      currency: account.currency || "TWD",
+      loan_category: account.loanCategory ?? null,
+      loan_interest_rate: account.loanInterestRate ?? null,
+      currency: account.currency ?? "TWD",
       credit_limit: account.creditLimit ?? null,
       opened_date: account.openedDate ?? null,
       maturity_date: account.maturityDate ?? null,
       inactive_at: account.inactiveAt ?? null,
       bank_code: bankCode,
       account_last4: last4,
+      autopay_status:
+        autopay === undefined ? null : autopay === null ? "none" : "enabled",
+      autopay_bank_code: autopay?.bankCode ?? null,
+      autopay_account_last4: autopay?.last4 ?? null,
+      autopay_account_source_id: autopay?.depositSourceId ?? null,
       raw_payload: JSON.stringify(account.raw ?? account),
       created_at: now,
       updated_at: now,
@@ -120,6 +128,10 @@ export function bankBalanceSnapshotRecord(
       statement_balance: snapshot.statementBalance ?? null,
       payment_due_date: snapshot.paymentDueDate ?? null,
       statement_closing_date: snapshot.statementClosingDate ?? null,
+      loan_payment_amount: snapshot.loanPaymentAmount ?? null,
+      loan_payment_status: snapshot.loanPaymentStatus ?? null,
+      loan_installments_paid: snapshot.loanInstallmentsPaid ?? null,
+      loan_installments_total: snapshot.loanInstallmentsTotal ?? null,
       no_payment_needed:
         snapshot.noPaymentNeeded == null
           ? null
@@ -157,6 +169,8 @@ export function bankTransactionRecord(
       description: transaction.description ?? null,
       counterparty: transaction.counterparty ?? null,
       status: transaction.status ?? "posted",
+      card_last4: transaction.cardLast4 ?? null,
+      card_name: transaction.cardName ?? null,
       transfer_peer_id: transaction.transferPeer
         ? stableId(
             connectorId,
@@ -218,9 +232,14 @@ export function investmentPositionRecord(
       asset_type: normalized.assetType,
       symbol: normalized.symbol ?? null,
       name: normalized.name,
+      broker_no: normalized.brokerNo ?? null,
+      broker_account: normalized.brokerAccount ?? null,
+      market: normalized.market ?? null,
       quantity: normalized.quantity ?? null,
       market_value: normalized.marketValue ?? null,
       cash_balance: normalized.cashBalance ?? null,
+      cost_basis: normalized.costBasis ?? null,
+      unrealized_pnl: normalized.unrealizedPnl ?? null,
       currency: normalized.currency,
       as_of_date: normalized.asOfDate,
       raw_payload: JSON.stringify(normalized.raw ?? normalized),
@@ -257,6 +276,7 @@ export function investmentTransactionRecord(
       quantity: transaction.quantity ?? null,
       price: transaction.price ?? null,
       amount: transaction.amount ?? null,
+      realized_pnl: transaction.realizedPnl ?? null,
       currency: transaction.currency || "TWD",
       raw_payload: JSON.stringify(transaction.raw ?? transaction),
       created_at: now,

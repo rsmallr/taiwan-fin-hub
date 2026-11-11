@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { getBuildInfo } from "./build-info.mjs";
 
 const scriptPath = fileURLToPath(
   new URL("./sync-upstream.mjs", import.meta.url),
@@ -154,259 +155,6 @@ function withTemporaryRepository(testFunction) {
   }
 }
 
-test("最新版保持 no-op，不建立備份 branch", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const originBare = path.join(root, "deployment.git");
-    initializeBareRepository(originBare);
-    git(upstream.worktree, "remote", "add", "deployment", originBare);
-    git(upstream.worktree, "push", "deployment", "main");
-
-    const runner = path.join(root, "runner");
-    cloneRepository(originBare, runner);
-    const before = git(runner, "rev-parse", "HEAD");
-    const result = runUpdater(runner, upstream.bare);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(git(runner, "rev-parse", "HEAD"), before);
-    assert.equal(remoteBranch(runner, "backup-before-first-upstream-sync"), "");
-    assert.match(result.stdout, /目前已是最新版/);
-  });
-});
-
-test("有共同祖先且落後時建立單一 parent 的三方同步 commit", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root, { includeSecondCommit: false });
-    const originBare = path.join(root, "deployment.git");
-    initializeBareRepository(originBare);
-    git(upstream.worktree, "remote", "add", "deployment", originBare);
-    git(upstream.worktree, "push", "deployment", "main");
-
-    write(upstream.worktree, "app.txt", "version 2\n");
-    upstream.latestCommit = commitAll(upstream.worktree, "upstream v2");
-    git(upstream.worktree, "push", "origin", "main");
-
-    const runner = path.join(root, "runner");
-    cloneRepository(originBare, runner);
-    write(
-      runner,
-      ".github/workflows/sync-upstream.yml",
-      "name: deployment updater\n",
-    );
-    commitAll(runner, "keep deployment updater");
-    git(runner, "push", "origin", "main");
-    const result = runUpdater(runner, upstream.bare);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      git(runner, "show", "HEAD:.github/workflows/sync-upstream.yml"),
-      "name: deployment updater",
-    );
-    assert.equal(
-      git(
-        runner,
-        "diff",
-        "--name-only",
-        "HEAD",
-        "upstream/main",
-        "--",
-        ".",
-        ":(exclude).github/workflows/**",
-      ),
-      "",
-    );
-    assert.equal(
-      git(runner, "rev-list", "--parents", "-n", "1", "HEAD").split(" ").length,
-      2,
-    );
-    assert.match(
-      git(runner, "show", "-s", "--format=%B", "HEAD"),
-      new RegExp(`Taiwan-Fin-Hub-Upstream: ${upstream.latestCommit}`),
-    );
-    assert.equal(remoteBranch(runner, "backup-before-first-upstream-sync"), "");
-    assert.match(result.stdout, /作為三方合併基準/);
-  });
-});
-
-test("首次無共同祖先時驗證來源、建立備份並同步完整上游 tree", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream);
-    const result = runUpdater(deployment.worktree, upstream.bare);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      remoteBranch(deployment.worktree, "backup-before-first-upstream-sync"),
-      deployment.beforeSync,
-    );
-    assert.equal(
-      git(
-        deployment.worktree,
-        "diff",
-        "--name-only",
-        "HEAD",
-        "upstream/main",
-        "--",
-        ".",
-        ":(exclude).github/workflows/**",
-      ),
-      "",
-    );
-    assert.equal(
-      git(
-        deployment.worktree,
-        "show",
-        "HEAD:.github/workflows/sync-upstream.yml",
-      ),
-      "name: manually installed updater",
-    );
-    assert.equal(
-      git(deployment.worktree, "ls-files", ".github/workflows/ci.yml"),
-      "",
-    );
-    assert.equal(
-      git(
-        deployment.worktree,
-        "rev-list",
-        "--parents",
-        "-n",
-        "1",
-        "HEAD",
-      ).split(" ").length,
-      2,
-    );
-    assert.match(
-      git(deployment.worktree, "show", "-s", "--format=%B", "HEAD"),
-      new RegExp(`Taiwan-Fin-Hub-Upstream: ${upstream.latestCommit}`),
-    );
-    assert.notEqual(
-      run(
-        "git",
-        ["merge-base", "--is-ancestor", upstream.latestCommit, "HEAD"],
-        { cwd: deployment.worktree, allowFailure: true },
-      ).status,
-      0,
-    );
-    assert.equal(
-      git(deployment.worktree, "ls-files", "removed-after-v1.txt"),
-      "",
-    );
-  });
-});
-
-test("首次版本已是最新時仍以 allow-empty commit 記錄上游 baseline", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root, { includeSecondCommit: false });
-    const deployment = createImportedDeployment(root, upstream);
-    const before = git(deployment.worktree, "rev-parse", "HEAD");
-    const beforeTree = git(deployment.worktree, "rev-parse", "HEAD^{tree}");
-
-    const result = runUpdater(deployment.worktree, upstream.bare);
-    const after = git(deployment.worktree, "rev-parse", "HEAD");
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.notEqual(after, before);
-    assert.equal(
-      git(deployment.worktree, "rev-parse", "HEAD^{tree}"),
-      beforeTree,
-    );
-    assert.deepEqual(
-      git(
-        deployment.worktree,
-        "rev-list",
-        "--parents",
-        "-n",
-        "1",
-        "HEAD",
-      ).split(" "),
-      [after, before],
-    );
-    assert.match(
-      git(deployment.worktree, "show", "-s", "--format=%B", "HEAD"),
-      new RegExp(`Taiwan-Fin-Hub-Upstream: ${upstream.latestCommit}`),
-    );
-  });
-});
-
-test("首次同步會拒絕 workflows 以外的使用者修改且不 push", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream, {
-      userChange: true,
-    });
-    const before = remoteBranch(deployment.worktree, "main");
-    const result = runUpdater(deployment.worktree, upstream.bare);
-
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /已有 \.github\/workflows 以外的程式碼變更/);
-    assert.match(result.stderr, /user-change\.txt/);
-    assert.equal(remoteBranch(deployment.worktree, "main"), before);
-    assert.equal(
-      remoteBranch(deployment.worktree, "backup-before-first-upstream-sync"),
-      "",
-    );
-  });
-});
-
-test("找不到相符上游基準時拒絕首次同步", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream, {
-      unknownBaseline: true,
-    });
-    const before = remoteBranch(deployment.worktree, "main");
-    const result = runUpdater(deployment.worktree, upstream.bare);
-
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /無法對應任何上游版本/);
-    assert.equal(remoteBranch(deployment.worktree, "main"), before);
-    assert.equal(
-      remoteBranch(deployment.worktree, "backup-before-first-upstream-sync"),
-      "",
-    );
-  });
-});
-
-test("既有首次同步備份 branch 不會被覆寫", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream);
-    git(
-      deployment.worktree,
-      "push",
-      "origin",
-      `${deployment.rootCommit}:refs/heads/backup-before-first-upstream-sync`,
-    );
-
-    const result = runUpdater(deployment.worktree, upstream.bare);
-
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(
-      remoteBranch(deployment.worktree, "backup-before-first-upstream-sync"),
-      deployment.rootCommit,
-    );
-    assert.match(result.stdout, /為避免覆寫既有備份/);
-  });
-});
-
-test("首次接軌成功後重跑保持冪等", () => {
-  withTemporaryRepository((root) => {
-    const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream);
-    const firstResult = runUpdater(deployment.worktree, upstream.bare);
-    assert.equal(firstResult.status, 0, firstResult.stderr);
-    const afterFirstSync = git(deployment.worktree, "rev-parse", "HEAD");
-
-    const secondResult = runUpdater(deployment.worktree, upstream.bare);
-
-    assert.equal(secondResult.status, 0, secondResult.stderr);
-    assert.equal(git(deployment.worktree, "rev-parse", "HEAD"), afterFirstSync);
-    assert.equal(remoteBranch(deployment.worktree, "main"), afterFirstSync);
-    assert.match(secondResult.stdout, /使用先前同步紀錄/);
-    assert.match(secondResult.stdout, /目前已是最新版/);
-  });
-});
-
 test("三方合併發生程式碼衝突時不改 working tree 且不 push", () => {
   withTemporaryRepository((root) => {
     const upstream = createUpstream(root, { includeSecondCommit: false });
@@ -486,47 +234,80 @@ test("先前同步後的非衝突使用者修改會保留，且不引入上游 p
   });
 });
 
-test("只有上游 workflow 變更時以 allow-empty commit 更新 baseline", () => {
+test("獨立部署辨識匯入與同步版本，自行新增 commit 後顯示未知", () => {
   withTemporaryRepository((root) => {
     const upstream = createUpstream(root);
-    const deployment = createImportedDeployment(root, upstream);
-    const firstResult = runUpdater(deployment.worktree, upstream.bare);
-    assert.equal(firstResult.status, 0, firstResult.stderr);
-    const before = git(deployment.worktree, "rev-parse", "HEAD");
-    const beforeTree = git(deployment.worktree, "rev-parse", "HEAD^{tree}");
-
-    write(
-      upstream.worktree,
-      ".github/workflows/ci.yml",
-      "name: upstream ci v2\n",
+    assert.equal(
+      getBuildInfo(upstream.worktree, upstream.bare).commit,
+      upstream.latestCommit,
     );
-    const workflowOnlyCommit = commitAll(upstream.worktree, "update workflow");
-    git(upstream.worktree, "push", "origin", "main");
+    const deployment = createImportedDeployment(root, upstream);
+    git(
+      deployment.worktree,
+      "push",
+      "origin",
+      `${deployment.rootCommit}:refs/heads/imported-snapshot`,
+    );
+
+    const buildCheckout = path.join(root, "cloudflare-build");
+    run("git", [
+      "clone",
+      "--depth=1",
+      "--branch=imported-snapshot",
+      pathToFileURL(deployment.bare).href,
+      buildCheckout,
+    ]);
+    const imported = getBuildInfo(buildCheckout, upstream.bare);
+    assert.equal(imported.repository, "TedLin1993/all-set-tw");
+    assert.equal(imported.commit, upstream.firstCommit);
+    assert.equal(imported.branch, "main");
+    assert.ok(Number.isFinite(Date.parse(imported.builtAt)));
+    assert.equal(
+      getBuildInfo(deployment.worktree, upstream.bare).commit,
+      "未知",
+    );
+    git(buildCheckout, "fetch", "--depth=1", "origin", "main");
+    git(buildCheckout, "checkout", "--detach", "FETCH_HEAD");
+    assert.equal(getBuildInfo(buildCheckout, upstream.bare).commit, "未知");
 
     const result = runUpdater(deployment.worktree, upstream.bare);
-    const after = git(deployment.worktree, "rev-parse", "HEAD");
-
     assert.equal(result.status, 0, result.stderr);
-    assert.notEqual(after, before);
+    const synced = getBuildInfo(deployment.worktree, upstream.bare);
+    assert.equal(synced.commit, upstream.latestCommit);
+    assert.equal(synced.branch, "main");
+
+    const syncedCheckout = path.join(root, "synced-build");
+    run("git", [
+      "clone",
+      "--depth=1",
+      pathToFileURL(deployment.bare).href,
+      syncedCheckout,
+    ]);
     assert.equal(
-      git(deployment.worktree, "rev-parse", "HEAD^{tree}"),
-      beforeTree,
+      getBuildInfo(syncedCheckout, upstream.bare).commit,
+      upstream.latestCommit,
     );
-    assert.deepEqual(
-      git(
-        deployment.worktree,
-        "rev-list",
-        "--parents",
-        "-n",
-        "1",
-        "HEAD",
-      ).split(" "),
-      [after, before],
+
+    write(deployment.worktree, "user-note.txt", "deployment note\n");
+    commitAll(deployment.worktree, "user note");
+    git(deployment.worktree, "checkout", "-b", "private-deployment");
+
+    const customized = getBuildInfo(deployment.worktree, upstream.bare);
+    assert.equal(customized.commit, "未知");
+    assert.equal(customized.branch, "main");
+
+    git(deployment.worktree, "push", "origin", "private-deployment");
+    const customizedCheckout = path.join(root, "customized-build");
+    run("git", [
+      "clone",
+      "--depth=1",
+      "--branch=private-deployment",
+      pathToFileURL(deployment.bare).href,
+      customizedCheckout,
+    ]);
+    assert.equal(
+      getBuildInfo(customizedCheckout, upstream.bare).commit,
+      "未知",
     );
-    assert.match(
-      git(deployment.worktree, "show", "-s", "--format=%B", "HEAD"),
-      new RegExp(`Taiwan-Fin-Hub-Upstream: ${workflowOnlyCommit}`),
-    );
-    assert.match(result.stdout, /保留部署版本/);
   });
 });

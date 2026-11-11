@@ -4,8 +4,10 @@ import {
   bankBalanceSnapshots,
   investmentPositions,
   invoices,
-} from "@taiwan-fin-hub/db";
-import { and, isNull, sql } from "drizzle-orm";
+  isLatestInvestmentPosition,
+  exchangeRates,
+} from "../../db";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 export async function loadDashboardSummary(db: D1Database) {
   const database = createDrizzle(db);
@@ -18,21 +20,22 @@ export async function loadDashboardSummary(db: D1Database) {
         .get(),
       database
         .select({
-          count: sql<number>`count(*)`.as("count"),
+          count:
+            sql<number>`coalesce(sum(CASE WHEN ${investmentPositions.sourceId} = 'empty' OR ${investmentPositions.sourceId} LIKE 'empty:%' THEN 0 ELSE 1 END), 0)`.as(
+              "count",
+            ),
           total:
-            sql<number>`coalesce(sum(${investmentPositions.marketValue}), 0)`.as(
+            sql<number>`coalesce(sum((coalesce(${investmentPositions.marketValue}, 0) + coalesce(${investmentPositions.cashBalance}, 0)) * CASE WHEN ${investmentPositions.currency} = 'TWD' THEN 1 ELSE coalesce(${exchangeRates.rateToTwd}, 0) END), 0)`.as(
               "total",
             ),
         })
         .from(investmentPositions)
-        .where(
-          // Latest as_of_date is per connector + asset type, not a global max.
-          sql`${investmentPositions.asOfDate} = (
-            SELECT MAX(p2.as_of_date) FROM investment_positions p2
-            WHERE p2.connector_id = ${investmentPositions.connectorId}
-              AND p2.asset_type = ${investmentPositions.assetType}
-          )`,
+        .leftJoin(
+          exchangeRates,
+          eq(exchangeRates.currency, investmentPositions.currency),
         )
+        // Apply the same latest snapshot and account authority as the asset list.
+        .where(isLatestInvestmentPosition())
         .get(),
       database
         .select({ count: sql<number>`count(*)`.as("count") })

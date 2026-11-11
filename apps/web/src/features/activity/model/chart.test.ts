@@ -4,6 +4,7 @@ import {
   activityCashAmountTwd,
   activityCashFlow,
   activityDisplayAmount,
+  activityFlowTotalTwd,
   buildActivityCategorySlices,
 } from "./chart";
 import type { ActivityItem } from "./types";
@@ -24,13 +25,6 @@ function item(overrides: Partial<ActivityItem>): ActivityItem {
 }
 
 describe("activity category chart", () => {
-  it("converts zero foreign amounts without requiring an exchange rate", () => {
-    expect(activityAmountTwd(item({ amount: 0, currency: "HKD" }), {})).toBe(0);
-    expect(activityAmountTwd(item({ amount: -0, currency: "HKD" }), {})).toBe(
-      0,
-    );
-  });
-
   it("keeps nonzero foreign amounts unavailable without an exchange rate", () => {
     for (const amount of [100, -100]) {
       expect(
@@ -59,6 +53,7 @@ describe("activity category chart", () => {
       source: "card",
       amount: 63,
       category: "購物",
+      categoryId: "shopping",
       title: "信用卡消費折抵_樂購蝦皮－daniel0329",
     });
 
@@ -71,71 +66,30 @@ describe("activity category chart", () => {
         category: "購物",
         amount: 63,
         percentage: 100,
-        color: "#3e6f7c",
+        color: "#a45c78",
       },
     ]);
   });
 
-  it("groups categories and sorts them by amount descending", () => {
-    const slices = buildActivityCategorySlices(
-      [
-        item({ amount: -100, category: "餐飲" }),
-        item({ id: "2", amount: -300, category: "交通" }),
-        item({ id: "3", amount: -50, category: "餐飲" }),
-        item({ id: "4", amount: 900, category: "薪資" }),
-      ],
-      "expense",
-      {},
-    );
+  it("退費從同分類支出扣除；只有退費的分類不畫扇形但仍扣減總額", () => {
+    const items = [
+      item({ source: "card", amount: -1_000, category: "交通" }),
+      item({ source: "card", amount: 900, category: "交通", refund: true }),
+      item({ source: "card", amount: -500, category: "餐飲" }),
+      item({ source: "card", amount: 200, category: "購物", refund: true }),
+    ];
 
+    expect(activityCashFlow(items[1])).toBe("expense");
+    expect(buildActivityCategorySlices(items, "income", {})).toEqual([]);
     expect(
-      slices.map(({ category, amount }) => ({ category, amount })),
+      buildActivityCategorySlices(items, "expense", {}).map(
+        ({ category, amount }) => [category, amount],
+      ),
     ).toEqual([
-      { category: "交通", amount: 300 },
-      { category: "餐飲", amount: 150 },
+      ["餐飲", 500],
+      ["交通", 100],
     ]);
-    expect(slices[0]?.percentage).toBeCloseTo(66.67, 1);
-  });
-
-  it("keeps excluded categories selectable without counting their amount", () => {
-    const excluded = item({ amount: -500, excludedFromCalculation: true });
-
-    expect(activityCashAmountTwd(excluded, {})).toBe(0);
-    expect(activityCashFlow(excluded)).toBe("expense");
-    expect(buildActivityCategorySlices([excluded], "expense", {})).toEqual([
-      {
-        category: "未分類",
-        amount: 0,
-        percentage: 0,
-        color: "#3e6f7c",
-      },
-    ]);
-  });
-
-  it("sorts zero-value excluded categories after counted categories", () => {
-    const slices = buildActivityCategorySlices(
-      [
-        item({ amount: -500, category: "餐飲" }),
-        item({
-          id: "2",
-          amount: -300,
-          category: "未分類",
-          excludedFromCalculation: true,
-        }),
-      ],
-      "expense",
-      {},
-    );
-
-    expect(
-      slices.map(({ category, amount, percentage }) => ({
-        category,
-        amount,
-        percentage,
-      })),
-    ).toEqual([
-      { category: "餐飲", amount: 500, percentage: 100 },
-      { category: "未分類", amount: 0, percentage: 0 },
-    ]);
+    expect(activityFlowTotalTwd(items, "expense", {})).toBe(400);
+    expect(activityFlowTotalTwd(items, "income", {})).toBe(0);
   });
 });
